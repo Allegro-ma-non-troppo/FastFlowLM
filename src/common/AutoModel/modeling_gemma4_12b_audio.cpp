@@ -19,9 +19,7 @@ audio_data_t Gemma4_12B::load_audio_base64(const std::string &base64_str, int re
     // Decode base64 to raw bytes
     std::string audio_bytes = base64::from_base64(base64_str);
     if (!audio_reader_.load_audio_from_memory(reinterpret_cast<const uint8_t*>(audio_bytes.data()), audio_bytes.size(), result, resample_rate, downmix)) {
-        std::cerr << "Failed to load audio from base64 string" << std::endl;
-        exit(-1);
-        //return empty_result;
+        throw ModelRequestError(400, false, "Failed to load audio from base64 string");
     }
     return result;
 }
@@ -34,9 +32,7 @@ audio_data_t Gemma4_12B::load_audio(const std::string &filename, int resample_ra
     audio_data_t result;
     
     if (!audio_reader_.load_audio(filename, result, resample_rate, downmix)) {
-        std::cerr << "Failed to load audio: " << filename << std::endl;
-        exit(-1);
-        //return empty_result;
+        throw ModelRequestError(400, false, "Failed to load audio: " + filename);
     }
     return result;
 }

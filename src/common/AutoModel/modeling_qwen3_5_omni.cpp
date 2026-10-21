@@ -23,8 +23,7 @@ void Qwen3_5_Omni::setup_tokenizer(std::string model_path) {
     std::string tokenizer_config_path = model_path + "/tokenizer_config.json";
     std::ifstream fs_config(tokenizer_config_path, std::ios::in | std::ios::binary);
     if (fs_config.fail()) {
-        header_print("ERROR", "Cannot open " << tokenizer_config_path);
-        exit(1);
+        throw std::runtime_error("Cannot open " + tokenizer_config_path);
     }
     std::string data_config((std::istreambuf_iterator<char>(fs_config)), std::istreambuf_iterator<char>());
     fs_config.close();
@@ -39,13 +38,11 @@ void Qwen3_5_Omni::setup_tokenizer(std::string model_path) {
         fs_template.close();
         tokenizer_config["chat_template"] = chat_template;
     } else if (tokenizer_config.find("chat_template") == tokenizer_config.end()) {
-        header_print("ERROR", "No template file found and no chat_template in tokenizer_config.json");
-        exit(1);
+        throw std::runtime_error("No template file found and no chat_template in tokenizer_config.json");
     }
 
     if (tokenizer_config["eos_token"].is_null()) {
-        header_print("ERROR", "eos_token is null in tokenizer_config.json");
-        exit(1);
+        throw std::runtime_error("eos_token is null in tokenizer_config.json");
     }
 
     this->chat_tmpl = std::make_unique<minja::chat_template>(
@@ -87,8 +84,7 @@ void Qwen3_5_Omni::load_model(std::string model_path, json model_info, int defau
     }
 
     if (this->npu_device_inst == nullptr) {
-        header_print("ERROR", "NPU device instance is nullptr");
-        exit(1);
+        throw std::runtime_error("NPU device instance is nullptr");
     }
     this->npu = std::make_unique<npu_xclbin_manager>(npu_device::device_npu2, this->npu_device_inst, enable_preemption);
     this->enable_preemption = enable_preemption;

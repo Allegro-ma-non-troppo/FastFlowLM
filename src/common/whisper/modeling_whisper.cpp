@@ -62,8 +62,7 @@ void Whisper::setup_tokenizer(std::string model_path) {
     #endif
     std::ifstream fs_config(tokenizer_config_path, std::ios::in | std::ios::binary);
     if (fs_config.fail()) {
-        std::cerr << "Cannot open " << tokenizer_config_path << std::endl;
-        exit(1);
+        throw std::runtime_error("Cannot open " + tokenizer_config_path);
     }
     std::string data_config;
     fs_config.seekg(0, std::ios::end);

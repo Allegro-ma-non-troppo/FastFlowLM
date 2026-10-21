@@ -153,8 +153,7 @@ bool Gemma4_12B::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, 
                     std::string audio_str = aud.get<std::string>();
                     audio_data_t audio_data = this->load_audio_base64(audio_str, gemma4e_engine->GEMMA4_12B_audio_sampling_rate, MonoDownmixMode::RMS);
                     if (audio_data.channels > 1) {
-                        std::cerr << "only mono audio is supported." << std::endl;
-                        exit(-1);
+                        throw ModelRequestError(400, false, "only mono audio is supported.");
                     }
 
                     std::vector<std::vector<bf16>> audio_chunks;
@@ -208,8 +207,7 @@ bool Gemma4_12B::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, 
                 audio_data_t audio_data = this->load_audio(audio_str, gemma4e_engine->GEMMA4_12B_audio_sampling_rate, MonoDownmixMode::RMS); 
                 
                 if (audio_data.channels > 1) {
-                    std::cerr << "only mono audio is supported, but got " << audio_data.original_channels << " channels. Please convert it to mono first." << std::endl;
-                    exit(-1);
+                    throw ModelRequestError(400, false, "only mono audio is supported, but got " + std::to_string(audio_data.original_channels) + " channels. Please convert it to mono first.");
                 }
                 // A clip longer than the 750-soft-token (30 s) cap must be split
                 // into several chunks; each chunk becomes its own audio entry in

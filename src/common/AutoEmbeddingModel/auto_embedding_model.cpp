@@ -32,8 +32,7 @@ nlohmann::json AutoEmbeddingModel::_shared_setup_tokenizer(std::string model_pat
     #endif
     std::ifstream fs_config(tokenizer_config_path, std::ios::in | std::ios::binary);
     if (fs_config.fail()) {
-        std::cerr << "Cannot open " << tokenizer_config_path << std::endl;
-        exit(1);
+        throw std::runtime_error("Cannot open " + tokenizer_config_path);
     }
     std::string data_config;
     fs_config.seekg(0, std::ios::end);
@@ -60,8 +59,7 @@ void AutoEmbeddingModel::_shared_load_model(std::string model_path, json model_i
     this->lm_config->from_pretrained(this->model_path);
 
     if (this->npu_device_inst == nullptr) {
-        header_print("ERROR", "NPU device instance is nullptr");
-        exit(1);
+        throw std::runtime_error("NPU device instance is nullptr");
     }
     this->npu = std::make_unique<npu_xclbin_manager>(npu_device::device_npu2, this->npu_device_inst, enable_preemption);
     this->enable_preemption = enable_preemption;

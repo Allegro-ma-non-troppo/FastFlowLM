@@ -85,8 +85,7 @@ nlohmann::json AutoModel::_shared_setup_tokenizer(std::string model_path) {
     #endif
     std::ifstream fs_config(tokenizer_config_path, std::ios::in | std::ios::binary);
     if (fs_config.fail()) {
-        std::cerr << "Cannot open " << tokenizer_config_path << std::endl;
-        exit(1);
+        throw std::runtime_error("Cannot open " + tokenizer_config_path);
     }
     std::string data_config;
     fs_config.seekg(0, std::ios::end);
@@ -113,15 +112,13 @@ nlohmann::json AutoModel::_shared_setup_tokenizer(std::string model_path) {
     if (std::filesystem::exists(chat_template_path) == false) {
         // no jinja file exist, see if chat_template in tokenizer_config.json
         if (tokenizer_config.find("chat_template") == tokenizer_config.end()) {
-            header_print("ERROR", "No template file found and no chat_template in tokenizer_config.json");
-            exit(1);
+            throw std::runtime_error("No template file found and no chat_template in tokenizer_config.json");
         }
     }
     else {
         std::ifstream fs_template(chat_template_path, std::ios::in | std::ios::binary);
         if (fs_template.fail()) {
-            std::cerr << "Cannot open " << chat_template_path << std::endl;
-            exit(1);
+            throw std::runtime_error("Cannot open " + chat_template_path);
         }
         std::string chat_template;
         fs_template.seekg(0, std::ios::end);
@@ -135,8 +132,7 @@ nlohmann::json AutoModel::_shared_setup_tokenizer(std::string model_path) {
     }
     
     if (tokenizer_config["eos_token"].is_null()) {
-        header_print("ERROR", "eos_token is null in tokenizer_config.json");
-        exit(1);
+        throw std::runtime_error("eos_token is null in tokenizer_config.json");
     }
     this->chat_tmpl = std::make_unique<minja::chat_template>(
         tokenizer_config["chat_template"],
@@ -152,8 +148,7 @@ nlohmann::json AutoModel::_shared_setup_tokenizer(std::string model_path) {
             this->bos_token_id = *forced;
         }
         else if (!tokenizer_config["bos_token_id"].is_number_integer()) {
-            header_print("ERROR", "bos_token is set in tokenizer_config.json but bos_token_id is missing or not an integer");
-            exit(1);
+            throw std::runtime_error("bos_token is set in tokenizer_config.json but bos_token_id is missing or not an integer");
         }
         else {
             this->bos_token_id = tokenizer_config["bos_token_id"].get<int>();
@@ -170,13 +165,11 @@ nlohmann::json AutoModel::_shared_setup_tokenizer(std::string model_path) {
         this->eos_token_ids = *forced;
     } else {
         if (!tokenizer_config["eos_token_id"].is_array()) {
-            header_print("ERROR", "eos_token_id is missing or not an array in tokenizer_config.json");
-            exit(1);
+            throw std::runtime_error("eos_token_id is missing or not an array in tokenizer_config.json");
         }
         for (auto& token : tokenizer_config["eos_token_id"]) {
             if (!token.is_number_integer()) {
-                header_print("ERROR", "eos_token_id must be an array of integers in tokenizer_config.json");
-                exit(1);
+                throw std::runtime_error("eos_token_id must be an array of integers in tokenizer_config.json");
             }
             this->eos_token_ids.push_back(token.get<int>());
         }
@@ -357,8 +350,7 @@ void AutoModel::_shared_guard_poisoned() const {
 
 void AutoModel::_shared_initialize_legacy_npu(bool enable_preemption) {
     if (this->npu_device_inst == nullptr) {
-        header_print("ERROR", "NPU device instance is nullptr");
-        exit(1);
+        throw std::runtime_error("NPU device instance is nullptr");
     }
     this->npu = std::make_unique<npu_xclbin_manager>(
         npu_device::device_npu2, this->npu_device_inst, enable_preemption);

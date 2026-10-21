@@ -14,8 +14,7 @@
 audio_data_t Qwen3_5_Omni::load_audio(const std::string& filename, int resample_rate, MonoDownmixMode downmix) {
     audio_data_t result;
     if (!audio_reader_.load_audio(filename, result, resample_rate, downmix)) {
-        header_print("ERROR", "Qwen3_5_Omni failed to load audio: " << filename);
-        exit(-1);
+        throw ModelRequestError(400, false, "Qwen3_5_Omni failed to load audio: " + filename);
     }
     return result;
 }
@@ -26,8 +25,7 @@ audio_data_t Qwen3_5_Omni::load_audio_base64(const std::string& base64_str, int 
     if (!audio_reader_.load_audio_from_memory(
             reinterpret_cast<const uint8_t*>(audio_bytes.data()), audio_bytes.size(),
             result, resample_rate, downmix)) {
-        header_print("ERROR", "Qwen3_5_Omni failed to load audio from base64 string");
-        exit(-1);
+        throw ModelRequestError(400, false, "Qwen3_5_Omni failed to load audio from base64 string");
     }
     return result;
 }

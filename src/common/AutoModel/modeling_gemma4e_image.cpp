@@ -92,8 +92,7 @@ std::vector<uint8_t> Gemma4e::aspect_ratio_preserving_resize(
         target_width = static_cast<int>(std::floor(ideal_width / side_mult)) * side_mult;
 
         if (target_height == 0 && target_width == 0) {
-            std::cerr << "Attempting to resize to a 0 x 0 image."<< std::endl;
-            exit(-1);
+            throw ModelRequestError(400, false, "Attempting to resize to a 0 x 0 image.");
         }
 
         int max_side_length = (max_patches / (pooling_kernel_size * pooling_kernel_size)) * side_mult;
@@ -113,9 +112,7 @@ std::vector<uint8_t> Gemma4e::aspect_ratio_preserving_resize(
         }
 
         if (target_height * target_width > target_px) {
-            
-            std::cerr << "Resized image exceeds max_patches"<< std::endl;
-            exit(-1);
+            throw ModelRequestError(400, false, "Resized image exceeds max_patches");
         }
     }
 

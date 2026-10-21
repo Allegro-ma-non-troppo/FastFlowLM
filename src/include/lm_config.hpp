@@ -11,6 +11,7 @@
 #include "utils/file_access.hpp"
 #include "nlohmann/json.hpp"
 #include <filesystem>
+#include <stdexcept>
 
 /// \brief read one parameter out of a config json
 /// \note Same semantics as JSON_GET (missing OR null falls back to the default),
@@ -104,8 +105,7 @@ class LM_Config{
             flm::file_access::ObserveOpen(config_path);
             std::ifstream file(config_path);
             if (!file.is_open()){
-                std::cerr << "Failed to open file: " << this->model_path << std::endl;
-                exit(1);
+                throw std::runtime_error("Failed to open file: " + config_path.string());
             }
             // read the json file as a string
             std::string json_str((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());

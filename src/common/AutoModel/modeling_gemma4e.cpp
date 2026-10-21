@@ -350,8 +350,7 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
                     std::string audio_str = aud.get<std::string>();
                     audio_data_t audio_data = this->load_audio_base64(audio_str, gemma4e_engine.Gemma4E_Audio_resample_rate, MonoDownmixMode::MEAN);
                     if (audio_data.channels > 1) {
-                        std::cerr << "only mono audio is supported." << std::endl;
-                        exit(-1);
+                        throw ModelRequestError(400, false, "only mono audio is supported.");
                     }
                     std::vector<audio_data_t> clipped_audio_data = this->clip_audio_length(audio_data, max_support_audio_length_seconds);
                     if (this->max_audio_chunks > 0 && (int)clipped_audio_data.size() > this->max_audio_chunks) {
@@ -386,8 +385,7 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
                 audio_data_t audio_data = this->load_audio(audio_str, gemma4e_engine.Gemma4E_Audio_resample_rate, MonoDownmixMode::MEAN); 
                 
                 if (audio_data.channels > 1) {
-                    std::cerr << "only mono audio is supported, but got " << audio_data.original_channels << " channels. Please convert it to mono first." << std::endl;
-                    exit(-1);
+                    throw ModelRequestError(400, false, "only mono audio is supported, but got " + std::to_string(audio_data.original_channels) + " channels. Please convert it to mono first.");
                 }
 
                 // apply clipping

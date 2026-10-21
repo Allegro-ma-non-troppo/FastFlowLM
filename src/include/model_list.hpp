@@ -55,8 +55,7 @@ class model_list {
             this->backends_ = std::move(backends);
             std::ifstream config_file(list_path);
             if (!config_file.is_open()) {
-                std::cerr << "Failed to open config file: " << list_path << std::endl;
-                exit(1);
+                throw std::runtime_error("Failed to open config file: " + list_path);
             }
             this->config = nlohmann::json::parse(config_file);
             // Resolve model_root_path relative to executable directory

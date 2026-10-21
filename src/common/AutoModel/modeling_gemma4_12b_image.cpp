@@ -32,15 +32,13 @@ static void patches_merge(
     // patch_size = isqrt(D / 3)
     const int patch_size = static_cast<int>(std::lround(std::sqrt(D / 3.0)));
     if (patch_size * patch_size * 3 != D) {
-        std::cerr << "patches_merge: D=" << D << " is not patch_size*patch_size*3" << std::endl;
-        exit(-1);
+        throw std::runtime_error("patches_merge: D=" + std::to_string(D) + " is not patch_size*patch_size*3");
     }
 
     // k = isqrt(L / length)
     const int k = static_cast<int>(std::lround(std::sqrt(static_cast<double>(L) / length)));
     if (k * k * length != L) {
-        std::cerr << "patches_merge: cannot merge L=" << L << " into length=" << length << std::endl;
-        exit(-1);
+        throw std::runtime_error("patches_merge: cannot merge L=" + std::to_string(L) + " into length=" + std::to_string(length));
     }
 
     // floor division matching torch rounding_mode="floor"
@@ -200,8 +198,7 @@ std::vector<uint8_t> Gemma4_12B::aspect_ratio_preserving_resize(
         target_width = static_cast<int>(std::floor(ideal_width / side_mult)) * side_mult;
 
         if (target_height == 0 && target_width == 0) {
-            std::cerr << "Attempting to resize to a 0 x 0 image."<< std::endl;
-            exit(-1);
+            throw ModelRequestError(400, false, "Attempting to resize to a 0 x 0 image.");
         }
 
         int max_side_length = (max_patches / (pooling_kernel_size * pooling_kernel_size)) * side_mult;
@@ -221,9 +218,7 @@ std::vector<uint8_t> Gemma4_12B::aspect_ratio_preserving_resize(
         }
 
         if (target_height * target_width > target_px) {
-            
-            std::cerr << "Resized image exceeds max_patches"<< std::endl;
-            exit(-1);
+            throw ModelRequestError(400, false, "Resized image exceeds max_patches");
         }
     }
 

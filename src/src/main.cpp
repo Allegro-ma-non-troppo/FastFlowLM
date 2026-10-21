@@ -26,6 +26,7 @@
 #include <mutex>
 #include <filesystem>
 #include <cstdlib>
+#include <optional>
 #ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
@@ -676,9 +677,19 @@ int main(int argc, char* argv[]) {
     // that were linked in, and a tag names its own flow.
     const utils::npu_platform platform = utils::get_device();
 
-    model_list availble_models(
-        config_path, models_dir, std::string(utils::platform_id(platform)),
-        flm::backend::BackendRegistry::instance().backend_ids());
+    // The constructor throws when the catalog cannot be opened; report it the
+    // way every other startup failure is reported rather than letting it escape.
+    std::optional<model_list> availble_models_storage;
+    try {
+        availble_models_storage.emplace(
+            config_path, models_dir, std::string(utils::platform_id(platform)),
+            flm::backend::BackendRegistry::instance().backend_ids());
+    }
+    catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        return 1;
+    }
+    model_list& availble_models = *availble_models_storage;
 
     const bool print_status = !parsed_args.json_output && !parsed_args.sub_process_mode;
     const bool needs_npu =

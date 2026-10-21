@@ -24,7 +24,7 @@
 #include <string>
 #include <memory>
 #include <functional>
-#include "prompt_cache.hpp"
+#include "request/chat_request.hpp"
 
 using json = nlohmann::ordered_json;
 
@@ -116,8 +116,6 @@ private:
     void ensure_asr_model_loaded(const std::string& model_tag);
     void ensure_embed_model_loaded(const std::string& model_tag);
     void configure_chat_engine_parameters(const json& options, const json& request);
-    json build_nstream_response(const std::string& response_text, chat_meta_info_t& meta_info,
-                                const chat_parse_options& parse_options);
 
 
     std::unique_ptr<AutoModel> auto_chat_engine;
@@ -149,5 +147,6 @@ private:
     std::string backend;
     /// \brief the backend the currently loaded model was asked for
     std::string current_backend;
-    PromptCache prompt_cache;
+    /// \brief the prompt cache and the other state that spans chat requests
+    flm::request::ChatSession chat_session;
 };

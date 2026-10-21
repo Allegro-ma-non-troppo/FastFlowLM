@@ -13,8 +13,10 @@ if(NOT DEFINED NPU_VERSION)
     message(FATAL_ERROR "NPU_VERSION must be specified externally. Use -DNPU_VERSION=<version> when running cmake.")
 endif()
 
-# Set build type to Release
-set(CMAKE_BUILD_TYPE Release)
+# Set build type to Release; a project that embeds FastFlowLM chooses its own
+if(PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
@@ -26,7 +28,7 @@ set(CMAKE_ERROR_DEPRECATED ON)
 
 
 # Set output directories
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 
 # Force output directories to be absolute
@@ -48,6 +50,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 # ———————————————————————————————————————————————
 option(FLM_USE_HRX "Use the HRX amdxdna NPU runtime instead of XRT (0=XRT default, 1=HRX)" OFF)
 option(FLM_PORTABLE_BUILD "Build portable distribution with bundled runtime libraries" OFF)
+# The executable is the product of a standalone build only. A parent project that
+# adds this directory to link flm_lib usually has a target of its own called flm,
+# and packages the files itself.
+option(FLM_BUILD_CLI "Build the flm command-line executable (and install it)" ${PROJECT_IS_TOP_LEVEL})
 # Where the kernels come from. FastFlowLM's own flow and ryzenai-corelib share
 # no engine, so a build links one or the other; this option is not an extra.
 # It also fixes the NPU generation the build targets -- see utils/npu_platform.hpp.
@@ -63,7 +69,7 @@ if(FLM_ENABLE_CORE)
     # handed a prefix on the command line, which is the only reason the core
     # build ever needed an environment variable.
     find_path(RYZENAI_CORELIB_INCLUDE_DIR NAMES ryzenai/corelib.h
-        HINTS "${CMAKE_SOURCE_DIR}/include"
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/include"
               "${RYZENAI_CORELIB_ROOT}/include"
               "$ENV{RYZENAI_CORELIB_ROOT}/include" REQUIRED)
     # corelib is linked in rather than dlopened.
@@ -76,7 +82,7 @@ if(FLM_ENABLE_CORE)
     # should use that one rather than whatever an unrelated prefix happens to
     # hold.
     find_library(RYZENAI_CORELIB_LIBRARY NAMES ryzenai_corelib corelib
-        HINTS "${CMAKE_SOURCE_DIR}/lib"
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/lib"
               "${RYZENAI_CORELIB_INCLUDE_DIR}/../lib"
               "${RYZENAI_CORELIB_INCLUDE_DIR}/../lib64"
               "$ENV{RYZENAI_CORELIB_LIB_DIR}" REQUIRED)
@@ -105,7 +111,7 @@ endif()
 
 # Prebuilt engine libraries live in a per-backend subdirectory so the XRT-built
 # and HRX-built .so/.dll/.lib never collide (see src/lib/xrt and src/lib/hrx).
-set(FLM_ENGINE_LIB_DIR "${CMAKE_SOURCE_DIR}/lib/${FLM_RUNTIME_NAME}")
+set(FLM_ENGINE_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/${FLM_RUNTIME_NAME}")
 
 # The flash engine libs (qwen3vl_flash, gemma4e_flash) are always shipped in
 # src/lib/${FLM_RUNTIME_NAME} for every backend, so their model families are
@@ -184,21 +190,21 @@ if(CMAKE_CXX_STANDARD LESS 17)
     set(CMAKE_CXX_STANDARD 17)
 endif()
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/../third_party/tokenizers-cpp
-                 ${CMAKE_BINARY_DIR}/tokenizers-cpp
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tokenizers-cpp
+                 ${CMAKE_CURRENT_BINARY_DIR}/tokenizers-cpp
                  EXCLUDE_FROM_ALL)
 
 # JPEG/PNG decoding for ImageReader: static libjpeg-turbo + vendored lodepng.
-include(${CMAKE_SOURCE_DIR}/cmake/FlmImageCodecs.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FlmImageCodecs.cmake)
 # Audio decoding for AudioReader: static libopus/libogg/libvorbis + vendored dr_libs.
-include(${CMAKE_SOURCE_DIR}/cmake/FlmAudioCodecs.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FlmAudioCodecs.cmake)
 
 # ———————————————————————————————————————————————
 # xgrammar: the grammar engine behind constrained decoding (tool_choice,
 # response_format), shared with the test harnesses. The chat sources themselves
 # come in with the common/*/*.cpp glob below.
 # ———————————————————————————————————————————————
-include("${CMAKE_SOURCE_DIR}/common/chat/chat_sources.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/common/chat/chat_sources.cmake")
 
 # ———————————————————————————————————————————————
 # Gather your sources
@@ -228,8 +234,8 @@ if(NOT WIN32)
     # list(FILTER SOURCES EXCLUDE REGEX ".*auto_embedding_model\\.cpp$")
 
     set_source_files_properties(
-        ${CMAKE_SOURCE_DIR}/common/image_process_utils/imageprocAVX512.cpp
-        ${CMAKE_SOURCE_DIR}/common/audio_process_utils/audioprocAVX512.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/image_process_utils/imageprocAVX512.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/audio_process_utils/audioprocAVX512.cpp
         PROPERTIES
         COMPILE_OPTIONS "-mavx512f;-mavx512dq;-mavx512vl;-mavx512bw;-mfma"
     )
@@ -240,21 +246,29 @@ else()
     # Windows cl and clang-cl need the ISA named on these files, and clang-cl
     # ignores the GCC -m flags.
     set_source_files_properties(
-        ${CMAKE_SOURCE_DIR}/common/image_process_utils/imageprocAVX512.cpp
-        ${CMAKE_SOURCE_DIR}/common/audio_process_utils/audioprocAVX512.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/image_process_utils/imageprocAVX512.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/audio_process_utils/audioprocAVX512.cpp
         PROPERTIES
         COMPILE_OPTIONS "/arch:AVX512"
     )
 endif()
 
 
-add_executable(flm ${SOURCES} ${HEADERS})
+# Everything except main() lives in a library, so a program that embeds FastFlowLM
+# links the same code the flm executable runs. The executable is main.cpp alone.
+list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+add_library(flm_lib STATIC ${SOURCES} ${HEADERS})
+
+if(FLM_BUILD_CLI)
+    add_executable(flm src/main.cpp)
+    target_link_libraries(flm PRIVATE flm_lib)
+endif()
 
 if(FLM_ENABLE_CORE)
-    include("${CMAKE_SOURCE_DIR}/common/core/core_sources.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/common/core/core_sources.cmake")
     add_library(flm_core STATIC ${FLM_CORE_SOURCES})
     target_include_directories(flm_core PUBLIC
-        "${CMAKE_SOURCE_DIR}/include" "${RYZENAI_CORELIB_INCLUDE_DIR}")
+        "${CMAKE_CURRENT_SOURCE_DIR}/include" "${RYZENAI_CORELIB_INCLUDE_DIR}")
     # XRT headers come from whichever discovery above succeeded: pkg-config sets
     # XRT_INCLUDE_DIRS, the Windows and /opt/xilinx fallbacks set the singular
     # XRT_INCLUDE_DIR. Same choice the flm target makes below -- naming only the
@@ -277,7 +291,7 @@ if(FLM_ENABLE_CORE)
     # compiles its dlopen path in a statically linked build, so the symbols have
     # to resolve even though nothing calls them here.
     target_link_libraries(flm_core PUBLIC "${RYZENAI_CORELIB_LIBRARY}" ${CMAKE_DL_LIBS})
-    target_link_libraries(flm PRIVATE flm_core)
+    target_link_libraries(flm_lib PUBLIC flm_core)
     # corelib loads each ryzenai_corelib_model_<name>.dll, which carries that
     # model's kernels, only from the directory ryzenai_corelib.dll itself was
     # loaded from, so both have to land beside flm.exe.
@@ -287,7 +301,7 @@ if(FLM_ENABLE_CORE)
             "${FLM_CORELIB_LIB_DIR}/../bin/ryzenai_corelib.dll"
             "${FLM_CORELIB_LIB_DIR}/../bin/ryzenai_corelib_model_*.dll")
         list(FILTER FLM_CORELIB_RUNTIME_DLLS EXCLUDE REGEX "ryzenai_corelib_model_dummy\\.dll$")
-        if(FLM_CORELIB_RUNTIME_DLLS)
+        if(FLM_CORELIB_RUNTIME_DLLS AND TARGET flm)
             add_custom_command(TARGET flm POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     ${FLM_CORELIB_RUNTIME_DLLS} $<TARGET_FILE_DIR:flm>)
@@ -370,33 +384,33 @@ endif()
 # ———————————————————————————————————————————————
 # Library specific settings
 # ———————————————————————————————————————————————
-target_include_directories(flm PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/runner
-    ${CMAKE_SOURCE_DIR}/server
-    ${CMAKE_SOURCE_DIR}/pull
+target_include_directories(flm_lib PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/runner
+    ${CMAKE_CURRENT_SOURCE_DIR}/server
+    ${CMAKE_CURRENT_SOURCE_DIR}/pull
 )
 
 # XRT backend: add the XRT headers (HRX carries its own via the hrx::hrx target).
 if(NOT FLM_USE_HRX)
     if(NOT WIN32 AND XRT_FOUND)
-        target_include_directories(flm PUBLIC ${XRT_INCLUDE_DIRS})
+        target_include_directories(flm_lib PUBLIC ${XRT_INCLUDE_DIRS})
     else()
-        target_include_directories(flm PUBLIC ${XRT_INCLUDE_DIR})
+        target_include_directories(flm_lib PUBLIC ${XRT_INCLUDE_DIR})
     endif()
 endif()
 
 if(WIN32 AND NOT VCPKG_TOOLCHAIN AND NOT FLM_WIN_DEPS_PREFIX)
     # Bare CI runner: standalone Boost + vcpkg headers by absolute path.
-    target_include_directories(flm PUBLIC
+    target_include_directories(flm_lib PUBLIC
         C:/dev/boost_1_88_0
         C:/dev/vcpkg/installed/x64-windows/include/
     )
 elseif(FLM_WIN_DEPS_PREFIX)
-    target_include_directories(flm PUBLIC "${FLM_WIN_DEPS_PREFIX}/include")
+    target_include_directories(flm_lib PUBLIC "${FLM_WIN_DEPS_PREFIX}/include")
 endif()
 
-target_compile_definitions(flm PUBLIC
+target_compile_definitions(flm_lib PUBLIC
     DISABLE_ABI_CHECK=1
     CMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
     CMAKE_XCLBIN_PREFIX="${CMAKE_XCLBIN_PREFIX}"
@@ -406,11 +420,11 @@ target_compile_definitions(flm PUBLIC
 
 # Select the NPU runtime backend seen by the sources (device_runtime.hpp et al.).
 if(FLM_USE_HRX)
-    target_compile_definitions(flm PUBLIC FLM_USE_HRX=1)
+    target_compile_definitions(flm_lib PUBLIC FLM_USE_HRX=1)
 endif()
 
 if(WIN32)
-    target_compile_definitions(flm PUBLIC
+    target_compile_definitions(flm_lib PUBLIC
         WIN32_LEAN_AND_MEAN
         NOMINMAX
         # Handle legacy stdio functions
@@ -422,7 +436,7 @@ endif()
 
 if(WIN32 AND NOT VCPKG_TOOLCHAIN AND NOT FLM_WIN_DEPS_PREFIX)
     # Bare CI runner: statically link the standalone Boost + curl.
-    target_compile_definitions(flm PUBLIC
+    target_compile_definitions(flm_lib PUBLIC
         CURL_STATICLIB
         BOOST_ALL_NO_LIB
         BOOST_ALL_STATIC_LINK
@@ -432,39 +446,39 @@ elseif(FLM_WIN_DEPS_PREFIX)
     # (boost::program_options::arg, options_description::m_default_line_length)
     # that only resolves through dllimport, so BOOST_ALL_STATIC_LINK would leave
     # it unresolved at link time; CURL_STATICLIB would mis-declare curl likewise.
-    target_compile_definitions(flm PUBLIC
+    target_compile_definitions(flm_lib PUBLIC
         BOOST_ALL_NO_LIB
         BOOST_ALL_DYN_LINK
     )
 endif()
 
-target_link_directories(flm PUBLIC
+target_link_directories(flm_lib PUBLIC
     ${FLM_ENGINE_LIB_DIR}       # per-backend prebuilt engine libs (lib/xrt or lib/hrx)
-    ${CMAKE_SOURCE_DIR}/lib     # shared third-party runtime libs (curl/... on Windows)
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib     # shared third-party runtime libs (curl/... on Windows)
 )
 
 # XRT backend: add the XRT runtime library dir (aiebu ships in lib/<backend>).
 if(NOT FLM_USE_HRX)
     if(NOT WIN32 AND XRT_FOUND)
-        target_link_directories(flm PUBLIC ${XRT_LIBRARY_DIRS})
+        target_link_directories(flm_lib PUBLIC ${XRT_LIBRARY_DIRS})
     else()
-        target_link_directories(flm PUBLIC ${XRT_LIB_DIR})
+        target_link_directories(flm_lib PUBLIC ${XRT_LIB_DIR})
     endif()
 endif()
 
 if(WIN32 AND NOT VCPKG_TOOLCHAIN AND NOT FLM_WIN_DEPS_PREFIX)
     # Bare CI runner: standalone Boost stage libs + vcpkg import libs.
-    target_link_directories(flm PUBLIC
+    target_link_directories(flm_lib PUBLIC
         C:/dev/boost_1_88_0/stage/lib
         C:/dev/vcpkg/installed/x64-windows/lib
     )
 elseif(FLM_WIN_DEPS_PREFIX)
-    target_link_directories(flm PUBLIC "${FLM_WIN_DEPS_PREFIX}/lib")
+    target_link_directories(flm_lib PUBLIC "${FLM_WIN_DEPS_PREFIX}/lib")
 endif()
 
 # Link static libraries first
 if(MSVC)
-    target_link_libraries(flm PUBLIC ${STATIC_LIBS})
+    target_link_libraries(flm_lib PUBLIC ${STATIC_LIBS})
 endif()
 
 # Defines the gemma4e_npu target, which the link list below then resolves to
@@ -509,9 +523,9 @@ list(APPEND FLM_ENGINE_LINK_LIBS
 )
 
 # Link your custom libraries (these may still be DLLs if no static versions available)
-target_link_libraries(flm PRIVATE flm_xgrammar)
+target_link_libraries(flm_lib PRIVATE flm_xgrammar)
 
-target_link_libraries(flm PUBLIC
+target_link_libraries(flm_lib PUBLIC
     ${FLM_ENGINE_LINK_LIBS}
     # flm's own code calls nothing in the four shared-runtime libs below -- the
     # engine .so above do -- so the linker's default --as-needed drops them from
@@ -531,26 +545,26 @@ target_link_libraries(flm PUBLIC
 # runtime references (libhrx / libxrt_coreutil) resolve.
 if(FLM_USE_HRX)
     # (Windows: hrx.lib import lib for hrx.dll; Linux: libhrx.so.)
-    target_link_libraries(flm PUBLIC hrx::hrx)
-    if(NOT WIN32)
+    target_link_libraries(flm_lib PUBLIC hrx::hrx)
+    if(NOT WIN32 AND TARGET flm)
         set_target_properties(flm PROPERTIES
             BUILD_RPATH "$<TARGET_FILE_DIR:hrx::hrx>;${FLM_ENGINE_LIB_DIR}")
     endif()
 else()
     # XRT: link xrt_coreutil (+ aiebu for the ELF assembler used by npu_utils_xrt).
     if(XRT_BUILT_FROM_SOURCE AND TARGET xrt_coreutil)
-        target_link_libraries(flm PUBLIC xrt_coreutil)
+        target_link_libraries(flm_lib PUBLIC xrt_coreutil)
     elseif(NOT WIN32 AND XRT_FOUND)
-        target_link_libraries(flm PUBLIC ${XRT_LIBRARIES})
+        target_link_libraries(flm_lib PUBLIC ${XRT_LIBRARIES})
     else()
-        target_link_libraries(flm PUBLIC xrt_coreutil)
+        target_link_libraries(flm_lib PUBLIC xrt_coreutil)
     endif()
     if(WIN32)
-        target_link_libraries(flm PUBLIC aiebu_static)
+        target_link_libraries(flm_lib PUBLIC aiebu_static)
     else()
-        target_link_libraries(flm PUBLIC aiebu)
+        target_link_libraries(flm_lib PUBLIC aiebu)
     endif()
-    if(NOT WIN32)
+    if(NOT WIN32 AND TARGET flm)
         set_target_properties(flm PROPERTIES
             BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
     endif()
@@ -558,58 +572,58 @@ endif()
 
 # The source-built engine sits in the build tree rather than lib/<backend>, and
 # has to precede it: a prebuilt of the same name is still sitting there.
-if(FLM_BUILD_GEMMA4E AND NOT WIN32)
+if(FLM_BUILD_GEMMA4E AND NOT WIN32 AND TARGET flm)
     get_target_property(_flm_build_rpath flm BUILD_RPATH)
     if(NOT _flm_build_rpath)
         set(_flm_build_rpath "")
     endif()
     set_target_properties(flm PROPERTIES
-        BUILD_RPATH "${CMAKE_BINARY_DIR}/engines;${_flm_build_rpath}")
+        BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}/engines;${_flm_build_rpath}")
 endif()
 
 if(WIN32 AND VCPKG_TOOLCHAIN)
     # Local/managed vcpkg: link the imported targets from the CONFIG packages
     # found above (versioned import-lib names resolved automatically).
-    target_link_libraries(flm PUBLIC
+    target_link_libraries(flm_lib PUBLIC
         Boost::program_options
         CURL::libcurl
     )
 elseif(WIN32 AND FLM_WIN_DEPS_PREFIX)
     # Local prefix: the names it ships (checked at configure time above).
-    target_link_libraries(flm PUBLIC
+    target_link_libraries(flm_lib PUBLIC
         ${FLM_WIN_DEPS_PREFIX_LIBS}
     )
 elseif(WIN32)
     # Bare CI runner: link the native deps by raw name from the standalone Boost
     # + vcpkg lib dirs wired above (no CMake package configs there).
-    target_link_libraries(flm PUBLIC
+    target_link_libraries(flm_lib PUBLIC
         libcurl
         libboost_program_options-vc143-mt-x64-1_88
     )
 else()
-    target_link_libraries(flm PUBLIC
+    target_link_libraries(flm_lib PUBLIC
         Boost::program_options
         CURL::libcurl
     )
 endif()
 
 if(NOT WIN32)
-    target_compile_options(flm PUBLIC -mavx -mavx2)
+    target_compile_options(flm_lib PUBLIC -mavx -mavx2)
 
     # libedit (readline API) is only linked for non-portable builds (see the
     # discovery block); the CLI compiles a plain line-reader fallback when the
     # macro is undefined.
     if(NOT FLM_PORTABLE_BUILD)
-        target_compile_definitions(flm PUBLIC FASTFLOWLM_USE_READLINE=1)
-        target_link_libraries(flm PUBLIC PkgConfig::libedit)
+        target_compile_definitions(flm_lib PUBLIC FASTFLOWLM_USE_READLINE=1)
+        target_link_libraries(flm_lib PUBLIC PkgConfig::libedit)
     endif()
 
     # Link with dl library for dlopen() support (used for preloading bundled libraries)
-    target_link_libraries(flm PUBLIC dl)
+    target_link_libraries(flm_lib PUBLIC dl)
 else()
     # cl and clang-cl ignore -mavx -mavx2. /arch:AVX2 is the matching flag for
     # the rest of flm.
-    target_compile_options(flm PUBLIC /arch:AVX2)
+    target_compile_options(flm_lib PUBLIC /arch:AVX2)
 endif()
 
 # ———————————————————————————————————————————————
@@ -619,30 +633,35 @@ endif()
 # - tokenizers_cpp: main tokenizers C++ library
 # - tokenizers_c: tokenizers C FFI bindings  
 # - sentencepiece: sentencepiece tokenizer library
-target_link_libraries(flm PRIVATE
+target_link_libraries(flm_lib PUBLIC
     tokenizers_cpp
 )
-target_link_libraries(flm PRIVATE flm_image_codecs flm_audio_codecs)
+target_link_libraries(flm_lib PUBLIC flm_image_codecs flm_audio_codecs)
 
 if(WIN32)
-    target_link_libraries(flm PRIVATE
+    target_link_libraries(flm_lib PUBLIC
         ntdll wsock32 ws2_32 Bcrypt
         iphlpapi userenv psapi
         crypt32 secur32 advapi32 normaliz wldap32
     )
 else()
-    target_link_libraries(flm PRIVATE Threads::Threads)
+    target_link_libraries(flm_lib PUBLIC Threads::Threads)
 endif()
 
 
 # ———————————————————————————————————————————————
 # Copy the build flm.exe into the out directory (for local dev)
 # ———————————————————————————————————————————————
+# From here on the file packages the flm executable: the dev copy and the
+# install rules. A parent project that only links flm_lib does its own packaging,
+# so none of this runs for it (FLM_BUILD_CLI defaults to OFF there).
+if(FLM_BUILD_CLI AND PROJECT_IS_TOP_LEVEL)
+
 if(WIN32)
     add_custom_command(TARGET flm POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
             $<TARGET_FILE:flm>
-            ${CMAKE_SOURCE_DIR}/out/flm.exe
+            ${CMAKE_CURRENT_SOURCE_DIR}/out/flm.exe
     )
 endif()
 
@@ -755,10 +774,10 @@ else()
     # real binary to `flm-real` and this wrapper to `flm`.
     if(FLM_PORTABLE_BUILD)
         configure_file(
-            "${CMAKE_SOURCE_DIR}/flm-wrapper.sh.in"
-            "${CMAKE_BINARY_DIR}/flm-wrapper.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/flm-wrapper.sh.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/flm-wrapper.sh"
             @ONLY)
-        install(PROGRAMS "${CMAKE_BINARY_DIR}/flm-wrapper.sh" DESTINATION "${FLM_SHARE_DESTINATION}")
+        install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/flm-wrapper.sh" DESTINATION "${FLM_SHARE_DESTINATION}")
     endif()
 endif()
 
@@ -784,7 +803,7 @@ if(WIN32)
         DESTINATION bin
         DIRECTORIES
             "${FLM_ENGINE_LIB_DIR}"
-            "${CMAKE_SOURCE_DIR}/lib"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib"
             "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
             "${_flm_rt_dep_dir}"
         PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
@@ -912,7 +931,7 @@ else()
             UNRESOLVED_DEPENDENCIES_VAR _flm_unresolved
             DIRECTORIES
                 \"${FLM_ENGINE_LIB_DIR}\"
-                \"${CMAKE_SOURCE_DIR}/lib\"
+                \"${CMAKE_CURRENT_SOURCE_DIR}/lib\"
                 \"${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib\"
                 \"${_flm_rt_dep_dir}\"
             PRE_EXCLUDE_REGEXES
@@ -951,11 +970,13 @@ install(FILES model_info.json DESTINATION "${FLM_SHARE_DESTINATION}")
 # redistribution of the NPU kernels and engine libraries. THIRD_PARTY_NOTICES.txt
 # carries the notices for bundled and statically linked third-party code.
 install(FILES
-    ${CMAKE_SOURCE_DIR}/../LICENSE_RUNTIME.txt
-    ${CMAKE_SOURCE_DIR}/../LICENSE_BINARY.txt
-    ${CMAKE_SOURCE_DIR}/../THIRD_PARTY_NOTICES.txt
+    ${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE_RUNTIME.txt
+    ${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE_BINARY.txt
+    ${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.txt
     DESTINATION "${FLM_SHARE_DESTINATION}")
 
 # xclbins, which are loaded by shared libraries need to be in location
 # relative to the executable, so we install them relative to the binary.
 install(DIRECTORY xclbins DESTINATION "${FLM_SHARE_DESTINATION}")
+
+endif() # FLM_BUILD_CLI AND PROJECT_IS_TOP_LEVEL

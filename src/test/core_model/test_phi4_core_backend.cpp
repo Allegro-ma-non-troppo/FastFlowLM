@@ -16,6 +16,7 @@
 /// \note Never consulted: each test installs the fake process runtime first.
 namespace utils {
 std::string get_executable_directory() { return std::filesystem::current_path().string(); }
+std::string get_resource_directory() { return std::filesystem::current_path().string(); }
 }  // namespace utils
 
 namespace {

@@ -349,6 +349,24 @@ std::string get_user_directory();
 ///@return the executable directory path
 std::string get_executable_directory();
 
+///@brief set_resource_root makes a directory play the role of the executable directory for resource lookups
+///@param path directory holding model_list.json, model_info.json and xclbins/ (or the share/flm layout next to it); an empty string restores the default
+///@note For a host that links FastFlowLM into its own process and cannot place these files next to its own
+///      executable. Call it once, before the first find_model_list, find_model_info, find_xclbin_path or backend load.
+///      While a root is set, the lookups use it instead of the executable directory, and skip the current working
+///      directory and the install prefix baked in at build time. The FLM_CONFIG_PATH, FLM_MODELINFO_PATH and
+///      FLM_XCLBIN_PATH environment variables still take precedence.
+void set_resource_root(const std::string& path);
+
+///@brief get_resource_directory gets the directory resources are looked up in
+///@return the directory given to set_resource_root, or the executable directory when none was set
+std::string get_resource_directory();
+
+///@brief set_models_directory sets the directory models are stored in
+///@param path the models directory; an empty string restores the default
+///@note get_models_directory still prefers the FLM_MODEL_PATH environment variable over this value.
+void set_models_directory(const std::string& path);
+
 template<typename... fileName>
 inline std::string path_join(fileName&&... args){
 #ifdef _WIN32
@@ -379,7 +397,7 @@ std::string find_xclbin_path();
 ///@return the server port, default is 52625 if environment variable is not set
 int get_server_port(int user_port);
 
-///@brief get_models_directory gets the models directory from environment variable or defaults to Documents/flm/models on Windows or ~/.config/flm on Linux
+///@brief get_models_directory gets the models directory from the FLM_MODEL_PATH environment variable, then set_models_directory, then defaults to Documents/flm/models on Windows or ~/.config/flm on Linux
 ///@return the models directory path
 std::string get_models_directory();
 

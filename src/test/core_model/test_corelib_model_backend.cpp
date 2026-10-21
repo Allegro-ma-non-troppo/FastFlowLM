@@ -17,6 +17,7 @@
 ///       and CorelibRuntime::GetOrCreate returns that one.
 namespace utils {
 std::string get_executable_directory() { return std::filesystem::current_path().string(); }
+std::string get_resource_directory() { return std::filesystem::current_path().string(); }
 }  // namespace utils
 
 namespace {

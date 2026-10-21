@@ -161,7 +161,7 @@ public:
         bos_id_ = tokens.bos;
         const auto gguf = RequireGguf(context.model_info, context.model_path, name);
 
-        runtime_ = corelib::CorelibRuntime::GetOrCreate(utils::get_executable_directory());
+        runtime_ = corelib::CorelibRuntime::GetOrCreate(utils::get_resource_directory());
         auto engine = std::make_unique<CorelibModel>(spec.model, gguf, runtime_, length);
         engine->clear_context();
         engine_ = std::move(engine);

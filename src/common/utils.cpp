@@ -8,6 +8,7 @@
 #include "utils/utils.hpp"
 #include <filesystem>
 #include <cstdlib>
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -18,6 +19,41 @@
 #endif
 
 namespace utils {
+
+namespace {
+
+/// \brief the values set through set_resource_root / set_models_directory
+/// \note A lookup may run on any thread of a host process, so the strings are guarded.
+std::mutex g_override_mutex;
+std::string g_resource_root;
+std::string g_models_directory;
+
+bool resource_root_is_set() {
+    std::lock_guard<std::mutex> lock(g_override_mutex);
+    return !g_resource_root.empty();
+}
+
+} // namespace
+
+void set_resource_root(const std::string& path) {
+    std::lock_guard<std::mutex> lock(g_override_mutex);
+    g_resource_root = path;
+}
+
+std::string get_resource_directory() {
+    {
+        std::lock_guard<std::mutex> lock(g_override_mutex);
+        if (!g_resource_root.empty()) {
+            return g_resource_root;
+        }
+    }
+    return get_executable_directory();
+}
+
+void set_models_directory(const std::string& path) {
+    std::lock_guard<std::mutex> lock(g_override_mutex);
+    g_models_directory = path;
+}
 
 std::string find_model_list() {
     std::string install_prefix = CMAKE_INSTALL_PREFIX;
@@ -32,12 +68,15 @@ std::string find_model_list() {
     }
 
     // Portable development-tree location (next to the executable, then CWD).
-    std::string exe_dir = get_executable_directory();
+    // An explicit resource root replaces the executable directory and rules out
+    // the ambient locations, so a host gets the same answer from any CWD.
+    const bool rooted = resource_root_is_set();
+    std::string exe_dir = get_resource_directory();
     std::string exe_relative_path = exe_dir + "/model_list.json";
     if (std::filesystem::exists(exe_relative_path)) {
         return exe_relative_path;
     }
-    if (std::filesystem::exists("model_list.json")) {
+    if (!rooted && std::filesystem::exists("model_list.json")) {
         return "model_list.json";
     }
 
@@ -49,7 +88,7 @@ std::string find_model_list() {
 
     // Legacy configured prefix.
     std::string installed_path = install_prefix + "/share/flm/model_list.json";
-    if (std::filesystem::exists(installed_path)) {
+    if (!rooted && std::filesystem::exists(installed_path)) {
         return installed_path;
     }
 
@@ -87,7 +126,7 @@ std::string find_model_info() {
     // if (std::filesystem::exists("model_list.json")) {
     //     return "model_list.json";
     // }
-    std::string exe_dir = get_executable_directory();
+    std::string exe_dir = get_resource_directory();
     std::string exe_relative_path = exe_dir + "/model_info.json";
     if (std::filesystem::exists(exe_relative_path)) {
         return exe_relative_path;
@@ -99,14 +138,14 @@ std::string find_model_info() {
         return bundle_path;
     }
 
-    // Linux: install
+    // Linux: install (not with an explicit resource root, see find_model_list)
     std::string installed_path = install_prefix + "/share/flm/model_info.json";
-    if (std::filesystem::exists(installed_path)) {
+    if (!resource_root_is_set() && std::filesystem::exists(installed_path)) {
         return installed_path;
     }
 #else
-    // Windows: Check relative to executable
-    std::string exe_dir = get_executable_directory();
+    // Windows: Check relative to executable (or the resource root)
+    std::string exe_dir = get_resource_directory();
     std::string exe_relative_path = exe_dir + "\\model_info.json";
     if (std::filesystem::exists(exe_relative_path)) {
         return exe_relative_path;
@@ -141,11 +180,12 @@ std::string find_xclbin_path() {
     }
 
     // Portable development-tree location (next to the executable, then CWD).
-    std::string exe_dir = get_executable_directory();
+    const bool rooted = resource_root_is_set();
+    std::string exe_dir = get_resource_directory();
     if (std::filesystem::exists(exe_dir + "/xclbins")) {
         return exe_dir;
     }
-    if (std::filesystem::exists("xclbins")) {
+    if (!rooted && std::filesystem::exists("xclbins")) {
         return ".";
     }
 
@@ -157,7 +197,7 @@ std::string find_xclbin_path() {
 
     // Legacy configured prefix.
     std::string installed_path = xclbin_prefix;
-    if (std::filesystem::exists(installed_path + "/xclbins")) {
+    if (!rooted && std::filesystem::exists(installed_path + "/xclbins")) {
         return installed_path;
     }
 
@@ -268,6 +308,12 @@ std::string get_models_directory() {
         return std::string(model_path_env);
     }
 #endif
+    {
+        std::lock_guard<std::mutex> lock(g_override_mutex);
+        if (!g_models_directory.empty()) {
+            return g_models_directory;
+        }
+    }
     // Fallback to user/.flm/ on Windows or ~/.config/flm on Linux if environment variable is not set
     std::string user_dir = get_user_directory();
 #ifdef _WIN32

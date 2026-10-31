@@ -7,6 +7,7 @@
 *  \version 0.9.21
 */
 #include "runner.hpp"
+#include "AutoModel/model_backend.hpp"
 #include "harmony_filter.hpp"
 #ifndef FASTFLOWLM_LINUX_LIMITED_MODELS
 #include "AutoEmbeddingModel/all_embedding_model.hpp"
@@ -19,6 +20,7 @@
 #include <fstream>
 #include <algorithm>
 #include <thread>
+#include <tuple>
 #include <chrono>
 
 /// \brief Command map for command line input
@@ -65,24 +67,32 @@ Runner::Runner(model_list& supported_models, ModelDownloader& downloader, progra
     
     this->tag = auto_model.first;
 
-    switch (this->downloader.is_model_downloaded(this->tag, false, /*fast_check=*/true)) {
-        case ModelDownloader::ModelStatus::Ready:
-            break;
-        case ModelDownloader::ModelStatus::Outdated:
-        case ModelDownloader::ModelStatus::Missing:
-            this->downloader.pull_model(this->tag, this->modelscope);
-            break;
-        case ModelDownloader::ModelStatus::Incompatible:
-            exit(EXIT_FAILURE);
-    }
     auto [new_tag, model_info] = this->supported_models.get_model_info(this->tag);
-    this->asr_supported = model_info.contains("asr") && model_info["asr"];
-    // header_print("ASR", asr_supported);
-    this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
     try {
+        const auto selected = flm::backend::choose_backend_id(model_info, this->backend);
+        flm::backend::validate_backend_package(model_info, supported_models.get_model_path(new_tag),
+            selected, flm::backend::PackageValidationStage::Manifest);
+        switch (this->downloader.is_model_downloaded(this->tag, false, /*fast_check=*/true)) {
+            case ModelDownloader::ModelStatus::Ready:
+                break;
+            case ModelDownloader::ModelStatus::Outdated:
+            case ModelDownloader::ModelStatus::Missing:
+                if (!this->downloader.pull_model(this->tag, this->modelscope))
+                    throw std::runtime_error("failed to download " + this->tag);
+                break;
+            case ModelDownloader::ModelStatus::Incompatible:
+                throw std::runtime_error(this->tag + " is incompatible with this version of FastFlowLM");
+        }
+        // A pull may choose a different source for the same tag.
+        std::tie(new_tag, model_info) = supported_models.get_model_info(this->tag);
+        AutoModel::preflight_load_model(supported_models.get_model_path(new_tag), model_info,
+            this->ctx_length, this->preemption, selected);
+        this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
         const auto load_started = std::chrono::steady_clock::now();
-        this->auto_chat_engine->load_model(this->supported_models.get_model_path(new_tag), model_info, this->ctx_length, this->preemption, this->backend);
+        this->auto_chat_engine->load_model(supported_models.get_model_path(new_tag), model_info,
+            this->ctx_length, this->preemption, selected);
         report_load_time(load_started);
+        this->asr_supported = model_info.contains("asr") && model_info["asr"];
     }
     catch (const std::exception& e) {
         header_print("ERROR", "Failed to load model: " + std::string(e.what()));
@@ -199,6 +209,11 @@ void Runner::run() {
         
         // For commands, we only need to check the first token
         std::string first_token = input_list[0];
+        if (!auto_chat_engine && first_token != "/load" && first_token != "/bye" &&
+            first_token != "/list" && first_token != "/help" && first_token != "/?") {
+            header_print("ERROR", "No model is loaded. Use /load <model-tag> to retry.");
+            continue;
+        }
         
 
         // Check if this is a command (starts with /)
@@ -434,48 +449,57 @@ void Runner::cmd_status(std::vector<std::string>& input_list) {
 /// \brief Load a model
 /// \param input_list, std::vector<std::string>
 void Runner::cmd_load(std::vector<std::string>& input_list) {
-    std::string model_name = input_list[1];
-
-    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(model_name, this->supported_models, this->npu_device_inst);
-    model_name = auto_model.first;
-
-    if (model_name != this->tag) {
-        this->tag = model_name;
-
-        switch (this->downloader.is_model_downloaded(this->tag, false, /*fast_check=*/true)) {
+    if (input_list.size() < 2) {
+        header_print("ERROR", "Usage: /load <model-tag>");
+        return;
+    }
+    try {
+        const auto requested_tag = supported_models.rectify_model_tag(input_list[1]);
+        if (!supported_models.is_model_supported(requested_tag))
+            throw std::runtime_error("Unknown model tag '" + requested_tag + "'; see `flm list`");
+        auto [model_name, engine] = get_auto_model(requested_tag, supported_models, npu_device_inst);
+        auto [new_tag, model_info] = supported_models.get_model_info(model_name);
+        const auto selected = flm::backend::choose_backend_id(model_info, this->backend);
+        if (auto_chat_engine && model_name == this->tag && auto_chat_engine->backend_id() == selected) {
+            header_print("FLM", "Model already loaded: " << model_name);
+            return;
+        }
+        flm::backend::validate_backend_package(model_info, supported_models.get_model_path(new_tag),
+            selected, flm::backend::PackageValidationStage::Manifest);
+        switch (downloader.is_model_downloaded(model_name, false, /*fast_check=*/true)) {
             case ModelDownloader::ModelStatus::Ready:
                 break;
             case ModelDownloader::ModelStatus::Outdated:
             case ModelDownloader::ModelStatus::Missing:
-                this->downloader.pull_model(this->tag, this->modelscope);
+                if (!downloader.pull_model(model_name, this->modelscope))
+                    throw std::runtime_error("failed to download " + model_name);
                 break;
             case ModelDownloader::ModelStatus::Incompatible:
-                header_print("ERROR", "Model is incompatible with this version of FastFlowLM: " + this->tag);
-                exit(EXIT_FAILURE);
+                throw std::runtime_error(model_name + " is incompatible with this version of FastFlowLM");
         }
+        std::tie(new_tag, model_info) = supported_models.get_model_info(model_name);
+        const auto path = supported_models.get_model_path(new_tag);
+        AutoModel::preflight_load_model(path, model_info, this->ctx_length,
+            this->preemption, selected);
+        engine->configure_parameter("img_pre_resize", this->img_pre_resize);
+
+        // File and download failures above leave the old engine and conversation intact.
+        // Device allocation below needs the old engine's memory released first.
         auto_chat_engine.reset();
-        if(model_name=="gpt-oss:20b")
+        this->tag.clear();
+        if (model_name == "gpt-oss:20b")
             std::this_thread::sleep_for(std::chrono::milliseconds(2800));
-        this->auto_chat_engine = std::move(auto_model.second);
-
-        auto [new_tag, model_info] = this->supported_models.get_model_info(this->tag);
-        this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
-        try {
-            const auto load_started = std::chrono::steady_clock::now();
-            this->auto_chat_engine->load_model(this->supported_models.get_model_path(new_tag), model_info, this->ctx_length, this->preemption, this->backend);
-            report_load_time(load_started);
-        }
-        catch (const std::exception& e) {
-            header_print("ERROR", "Failed to load model: " + std::string(e.what()));
-            exit(EXIT_FAILURE);
-        }
-
-        this->auto_chat_engine->configure_parameter("system_prompt", this->system_prompt);
-
+        const auto load_started = std::chrono::steady_clock::now();
+        engine->load_model(path, model_info, this->ctx_length, this->preemption, selected);
+        report_load_time(load_started);
+        engine->configure_parameter("system_prompt", this->system_prompt);
+        this->asr_supported = model_info.contains("asr") && model_info["asr"];
+        this->auto_chat_engine = std::move(engine);
+        this->tag = new_tag;
     }
-    else
-        header_print("FLM", "Model already loaded: " << model_name);
-
+    catch (const std::exception& e) {
+        header_print("ERROR", "Failed to load model: " + std::string(e.what()));
+    }
 }
 
 /// \brief Save the history

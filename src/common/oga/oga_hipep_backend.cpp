@@ -1,5 +1,6 @@
 /// \file oga_hipep_backend.cpp
 #include "oga/oga_hipep_backend.hpp"
+#include "AutoModel/backend_package.hpp"
 
 #include "oga/oga_api.hpp"
 #include "oga/oga_engine.hpp"
@@ -73,6 +74,7 @@ struct GenaiConfig {
     std::uint32_t vocab_size = 0;
     std::uint32_t context_length = 0;
     std::vector<int> eos_ids;
+    std::vector<std::string> graphs;
 };
 
 GenaiConfig ReadGenaiConfig(const std::filesystem::path& root) {
@@ -93,10 +95,93 @@ GenaiConfig ReadGenaiConfig(const std::filesystem::path& root) {
     if (out.type.empty() || !out.vocab_size || !out.context_length)
         throw std::runtime_error(file.string() +
                                  " must state model.type, vocab_size and context_length");
+    for (const auto& section : *model) {
+        if (section.is_object() && section.contains("filename"))
+            out.graphs.push_back(section.at("filename").get<std::string>());
+    }
     return out;
 }
 
+struct SpecialTokens {
+    std::vector<int> eos_ids;
+    std::optional<int> bos_id;
+};
+
+SpecialTokens ReadSpecialTokens(const std::filesystem::path& root, const GenaiConfig& genai,
+                                const nlohmann::json* provided_config = nullptr) {
+    const std::string name = "OGA " + genai.type;
+    SpecialTokens tokens;
+    const auto tokenizer_config = provided_config
+                                      ? *provided_config
+                                      : ReadJson(root / "tokenizer_config.json");
+    const auto tokenizer = ReadJson(root / "tokenizer.json");
+    const auto id_of = [&](const char* key) -> std::optional<int> {
+        const auto text = TokenText(tokenizer_config, key);
+        if (!text) return std::nullopt;
+        const auto id = TokenId(tokenizer, *text);
+        if (!id)
+            throw std::runtime_error(name + " tokenizer.json has no id for " + key + " " +
+                                     *text);
+        return id;
+    };
+    if (const auto eos = id_of("eos_token")) tokens.eos_ids.push_back(*eos);
+    for (const int id : genai.eos_ids)
+        if (std::find(tokens.eos_ids.begin(), tokens.eos_ids.end(), id) == tokens.eos_ids.end())
+            tokens.eos_ids.push_back(id);
+    if (tokens.eos_ids.empty())
+        throw std::runtime_error(name + " package states no EOS token");
+    tokens.bos_id = id_of("bos_token");
+    return tokens;
+}
+
+void CheckLoadOptions(const GenaiConfig& genai, const flm::backend::BackendContext& context) {
+    const std::string name = "OGA " + genai.type;
+    if (context.enable_preemption)
+        throw std::invalid_argument(name + " does not support preemption");
+    if (context.context_length < 1 || context.context_length > genai.context_length)
+        throw std::out_of_range(name + " context length must be in 1.." +
+                                std::to_string(genai.context_length));
+}
+
 }  // namespace
+
+void validate_hipep_package(const nlohmann::json& info, const std::string& path,
+                            flm::backend::PackageValidationStage stage) {
+    using flm::backend::PackageValidationStage;
+    using flm::backend::require_package_file;
+    const std::filesystem::path root(path);
+    require_package_file(info, root, "genai_config.json", stage);
+    if (stage == PackageValidationStage::Manifest) return;
+    const auto genai = ReadGenaiConfig(root);
+    for (const auto& file : genai.graphs)
+        require_package_file(info, root, file, stage);
+    // The downloader owns integrity checking; these are only existence checks
+    // for external data named by the selected package's manifest.
+    const auto files = info.find("files");
+    if (files != info.end() && files->is_array()) {
+        for (const auto& file : *files) {
+            if (file.is_string() && file.get<std::string>().ends_with(".onnx.data"))
+                require_package_file(info, root, file.get<std::string>(), stage);
+        }
+    }
+    for (const char* file : {"config.json", "tokenizer.json", "tokenizer_config.json"})
+        require_package_file(info, root, file, stage);
+    // Use the frontend's normalization (including Qwen3.5 text_config), while
+    // keeping this check independent of executable paths and device discovery.
+    struct PackageConfig : LM_Config {
+        explicit PackageConfig(nlohmann::json document) {
+            _json_config = std::move(document);
+            _normalize_multi_modal();
+        }
+    } config(ReadJson(root / "config.json"));
+    if (config.get("vocab_size") != genai.vocab_size)
+        throw std::runtime_error("config.json vocab_size differs from genai_config.json vocab_size");
+    (void)ReadSpecialTokens(root, genai);
+}
+
+void validate_hipep_load(const flm::backend::BackendContext& context) {
+    CheckLoadOptions(ReadGenaiConfig(context.model_path), context);
+}
 
 OgaApi::Owned<OgaModel> OpenModel(const OgaApi& api, const std::filesystem::path& root) {
     const auto& f = api.functions();
@@ -129,12 +214,8 @@ public:
         const std::filesystem::path root(context.model_path);
         const GenaiConfig genai = ReadGenaiConfig(root);
         const std::string name = "OGA " + genai.type;
-        if (context.enable_preemption)
-            throw std::invalid_argument(name + " does not support preemption");
+        CheckLoadOptions(genai, context);
         const auto length = context.context_length;
-        if (length < 1 || length > genai.context_length)
-            throw std::out_of_range(name + " context length must be in 1.." +
-                                    std::to_string(genai.context_length));
         if (!context.config) throw std::invalid_argument(name + " needs the model's config.json");
         const auto vocab = context.config->get("vocab_size");
         if (vocab != genai.vocab_size)
@@ -142,26 +223,9 @@ public:
                                      " differs from genai_config.json vocab_size " +
                                      std::to_string(genai.vocab_size));
 
-        const auto tokenizer_config = context.tokenizer_config
-                                          ? *context.tokenizer_config
-                                          : ReadJson(root / "tokenizer_config.json");
-        const auto tokenizer = ReadJson(root / "tokenizer.json");
-        const auto id_of = [&](const char* key) -> std::optional<int> {
-            const auto text = TokenText(tokenizer_config, key);
-            if (!text) return std::nullopt;
-            const auto id = TokenId(tokenizer, *text);
-            if (!id)
-                throw std::runtime_error(name + " tokenizer.json has no id for " + key + " " +
-                                         *text);
-            return id;
-        };
-        if (const auto eos = id_of("eos_token")) eos_ids_.push_back(*eos);
-        for (const int id : genai.eos_ids)
-            if (std::find(eos_ids_.begin(), eos_ids_.end(), id) == eos_ids_.end())
-                eos_ids_.push_back(id);
-        if (eos_ids_.empty())
-            throw std::runtime_error(name + " package states no EOS token");
-        bos_id_ = id_of("bos_token");
+        const auto tokens = ReadSpecialTokens(root, genai, context.tokenizer_config);
+        eos_ids_ = tokens.eos_ids;
+        bos_id_ = tokens.bos_id;
 
         api_ = OgaApi::GetOrCreate();
         auto model = OpenModel(*api_, root);

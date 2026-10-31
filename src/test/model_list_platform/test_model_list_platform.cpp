@@ -267,12 +267,13 @@ void test_platform_helpers() {
     TEST_REQUIRE(!utils::parse_platform("stx").has_value());
     TEST_REQUIRE(utils::parse_platform(utils::platform_id(utils::npu_platform::dev04)) ==
                  utils::npu_platform::dev04);
+#if defined(FLM_ENABLE_CORE)
     TEST_REQUIRE(utils::default_npu_platform() == utils::npu_platform::dev04);
+#else
+    TEST_REQUIRE(utils::default_npu_platform() == utils::npu_platform::aie2p);
+#endif
 
-    // The stand-in consults nothing -- not the environment, not which kernels
-    // were linked -- so it is the default here and in a corelib build alike.
-    // Changing what an install can see means changing default_npu_platform()
-    // and rebuilding, which is the one place to look.
+    // The stand-in reports this build's platform, independent of the host.
     TEST_REQUIRE(utils::get_device() == utils::default_npu_platform());
     TEST_REQUIRE(utils::get_device() == utils::get_device());
 }

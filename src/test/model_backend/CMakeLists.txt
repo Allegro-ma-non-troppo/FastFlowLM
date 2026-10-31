@@ -51,3 +51,16 @@ target_link_libraries(test_model_backend PRIVATE xrt_coreutil)
 
 enable_testing()
 add_test(NAME test_model_backend COMMAND test_model_backend)
+
+add_executable(test_backend_package
+    test_backend_package.cpp
+    "${FLM_SOURCE_DIR}/common/AutoModel/flm_backend.cpp")
+target_include_directories(test_backend_package PRIVATE
+    "${FLM_SOURCE_DIR}/include" "${XRT_INCLUDE_DIR}")
+if(BOOST_INCLUDE_DIR)
+    target_include_directories(test_backend_package PRIVATE "${BOOST_INCLUDE_DIR}")
+endif()
+get_target_property(_xrt_link_dirs test_model_backend LINK_DIRECTORIES)
+target_link_directories(test_backend_package PRIVATE ${_xrt_link_dirs})
+target_link_libraries(test_backend_package PRIVATE xrt_coreutil)
+add_test(NAME test_backend_package COMMAND test_backend_package)

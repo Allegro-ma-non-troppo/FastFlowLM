@@ -10,6 +10,7 @@
 #include "AutoModel/model_backend.hpp"
 
 #if defined(FLM_ENABLE_CORE)
+#include "core/corelib_model_backend.hpp"
 #include "models/gemma4/core/dev04/gemma4_core_backend.hpp"
 #include "models/phi4/core/dev04/phi4_core_backend.hpp"
 #include "models/qwen3/core/dev04/qwen3_core_backend.hpp"
@@ -29,9 +30,17 @@ namespace {
 /// \param family the family name, as in details.family
 template <class Engine>
 void RegisterFlm(BackendRegistry& registry, const char* family) {
-    registry.register_backend(family, kFlmBackendId,
-                              flm_factory<Engine>());
+    BackendTraits traits;
+    traits.validate_package = validate_flm_package;
+    registry.register_backend(family, kFlmBackendId, flm_factory<Engine>(), traits);
 }
+
+#if defined(FLM_ENABLE_CORE)
+BackendTraits WithCorePackageCheck(BackendTraits traits) {
+    traits.validate_package = flm::core::ValidatePackage;
+    return traits;
+}
+#endif
 
 }  // namespace
 
@@ -66,19 +75,19 @@ void register_builtin_backends(BackendRegistry& registry) {
 #if defined(FLM_ENABLE_CORE)
     registry.register_backend("gemma4e", flm::backend::kCoreBackendId,
                               flm::gemma4::core_factory(),
-                              flm::gemma4::core_traits());
+                              WithCorePackageCheck(flm::gemma4::core_traits()));
     registry.register_backend("phi4", flm::backend::kCoreBackendId,
                               flm::phi4::core_factory(),
-                              flm::phi4::core_traits());
+                              WithCorePackageCheck(flm::phi4::core_traits()));
     registry.register_backend("qwen3", flm::backend::kCoreBackendId,
                               flm::qwen3::core_factory(),
-                              flm::qwen3::core_traits());
+                              WithCorePackageCheck(flm::qwen3::core_traits()));
     registry.register_backend("qwen3.5", flm::backend::kCoreBackendId,
                               flm::qwen35::core_factory(),
-                              flm::qwen35::core_traits());
+                              WithCorePackageCheck(flm::qwen35::core_traits()));
     registry.register_backend("qwen3.6-moe", flm::backend::kCoreBackendId,
                               flm::qwen36::core_factory(),
-                              flm::qwen36::core_traits());
+                              WithCorePackageCheck(flm::qwen36::core_traits()));
 #endif
 #if defined(FLM_ENABLE_OGA_HIPEP)
     registry.register_backend("qwen3.5", flm::backend::kOgaHipepBackendId,

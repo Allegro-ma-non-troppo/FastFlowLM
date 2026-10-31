@@ -159,20 +159,6 @@ std::string resolve_backend_id(const std::string& family,
     return chosen;
 }
 
-void require_backend_matches_files(bool entry_names_backend,
-                                   const std::string& files_backend,
-                                   const std::string& chosen,
-                                   const std::string& source) {
-    if (!entry_names_backend || chosen == files_backend) return;
-    throw std::runtime_error(
-        "Backend '" + chosen + "' (from " + source +
-        ") cannot run this model: its files were built for backend '" +
-        files_backend + "'. Each backend has its own model tag, so pick the "
-        "tag for the backend you want instead of overriding it. A family name "
-        "ending in '-core' or '-oga-hipep' names that backend, and any other "
-        "family runs on 'flm'. Run 'flm list' to see the tags.");
-}
-
 std::string choose_backend_id(const nlohmann::json& model_info,
                               const std::string& requested,
                               const std::string& requested_label) {
@@ -185,12 +171,23 @@ std::string choose_backend_id(const nlohmann::json& model_info,
 
     const std::string catalog_backend = model_info.value(
         kBackendKey, std::string(kFlmBackendId));
-    const bool entry_names_backend = model_info.contains(kBackendKey);
-    std::string source;
-    const std::string id = resolve_backend_id(
-        family, catalog_backend, requested, &source, requested_label);
-    require_backend_matches_files(entry_names_backend, catalog_backend, id, source);
-    return id;
+    return resolve_backend_id(family, catalog_backend, requested, nullptr, requested_label);
+}
+
+void validate_backend_package(const nlohmann::json& model_info,
+                              const std::string& model_path,
+                              const std::string& resolved_backend,
+                              PackageValidationStage stage) {
+    const auto family = model_info.at("details").at("family").get<std::string>();
+    const auto traits = BackendRegistry::instance().traits(family, resolved_backend);
+    if (!traits.validate_package) return;
+    try {
+        traits.validate_package(model_info, model_path, stage);
+    } catch (const std::exception& error) {
+        throw std::runtime_error("Backend '" + resolved_backend + "' cannot load package '" +
+                                 model_path + "': " + error.what() +
+                                 ". Use a compatible package; see `flm list`.");
+    }
 }
 
 }  // namespace flm::backend

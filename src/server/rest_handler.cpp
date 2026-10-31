@@ -16,6 +16,7 @@
 #include <sstream>
 #include <iostream>
 #include <thread>
+#include <tuple>
 #include <chrono>
 #include <iomanip>
 #include <limits>
@@ -553,8 +554,9 @@ RestHandler::RestHandler(model_list& models, ModelDownloader& downloader, progra
             header_print("Warning", "Default model tag '" << default_model_tag << "' is not supported. Falling back to 'llama3.2:1b'.");
             this->default_model_tag = "llama3.2:1b";
         }
-        if (!ensure_model_loaded(default_model_tag)) {
-            header_print("Error", "Failed to load default model: " + default_model_tag);
+        std::string load_error;
+        if (!ensure_model_loaded(default_model_tag, "", &load_error)) {
+            header_print("Error", "Failed to load default model: " + default_model_tag + ": " + load_error);
         }
     }
     else {
@@ -570,96 +572,72 @@ RestHandler::~RestHandler() = default;
 ///@brief Ensure the model is loaded
 ///@param model_tag the model tag
 bool RestHandler::ensure_model_loaded(const std::string& model_tag,
-                                      const std::string& request_backend) {
-    // Refuse a name the catalog does not have before anything resolves it;
-    // an unknown name used to load a substitute model (and on dev04 could
-    // end the process). Checked after rectify_model_tag, as get_model_info
-    // does, so "Ollama/<tag>" and bare family names still resolve.
-    // "model-faker" means no model was chosen.
-    if (model_tag != "model-faker" &&
-        !supported_models.is_model_supported(
-            supported_models.rectify_model_tag(model_tag))) {
-        header_print_r("ERROR", "Model tag '" << model_tag
-            << "' is not supported. Please check with `flm list`.");
-        return false;
-    }
-
-    // Nothing was chosen, so there is nothing to load; succeed only if a
-    // model is in fact loaded.
-    if (model_tag == "model-faker") {
-        return auto_chat_engine != nullptr;
-    }
-
-    // A per-request "backend" overrides --backend; either one differing from
-    // what is loaded forces a reload, exactly as a different model tag does.
-    const std::string requested_backend =
-        request_backend.empty() ? this->backend : request_backend;
-    // Compared in its resolved form, which is what current_model_tag holds, so
-    // "llama3.2" or "Ollama/llama3.2:1b" does not reload llama3.2:1b each time.
-    const std::string resolved_tag = supported_models.rectify_model_tag(model_tag);
-    if (current_model_tag != resolved_tag || current_backend != requested_backend) {
-        // Refused before the release below: a refused request must leave the
-        // loaded model in place.
-        try {
-            const nlohmann::json model_info = supported_models.get_model_info(resolved_tag).second;
-            flm::backend::choose_backend_id(model_info, requested_backend,
-                request_backend.empty() ? "--backend" : "the request's \"backend\" field");
+                                      const std::string& request_backend,
+                                      std::string* error) {
+    if (error) error->clear();
+    try {
+        if (model_tag == "model-faker") {
+            if (!auto_chat_engine) throw std::runtime_error("No model is loaded");
+            return true;
         }
-        catch (const std::exception& e) {
-            header_print("ERROR", "Failed to load model: " + std::string(e.what()));
-            return false;
+        const auto requested_tag = supported_models.rectify_model_tag(model_tag);
+        if (!supported_models.is_model_supported(requested_tag))
+            throw std::runtime_error("Model tag '" + model_tag +
+                                     "' is not supported. Please check with `flm list`.");
+        auto [resolved_tag, model_info] = supported_models.get_model_info(requested_tag);
+        const auto selected = flm::backend::choose_backend_id(model_info,
+            request_backend.empty() ? this->backend : request_backend,
+            request_backend.empty() ? "--backend" : "the request's backend field");
+        // Compare effective ids: an explicit value and the same default do not reload.
+        if (auto_chat_engine && current_model_tag == resolved_tag && current_backend == selected)
+            return true;
+
+        flm::backend::validate_backend_package(model_info, supported_models.get_model_path(resolved_tag),
+            selected, flm::backend::PackageValidationStage::Manifest);
+        auto [ensure_tag, engine] = get_auto_model(resolved_tag, supported_models, npu_device_inst);
+        switch (downloader.is_model_downloaded(ensure_tag, false, /*fast_check=*/true)) {
+            case ModelDownloader::ModelStatus::Ready:
+                break;
+            case ModelDownloader::ModelStatus::Outdated:
+            case ModelDownloader::ModelStatus::Missing:
+                if (!downloader.pull_model(ensure_tag, this->modelscope))
+                    throw std::runtime_error("failed to download " + ensure_tag);
+                break;
+            case ModelDownloader::ModelStatus::Incompatible:
+                throw std::runtime_error(ensure_tag + " is incompatible with this version of FastFlowLM");
         }
+        // Source selection may have changed during pull; use its actual package files.
+        std::tie(resolved_tag, model_info) = supported_models.get_model_info(ensure_tag);
+        const auto path = supported_models.get_model_path(resolved_tag);
+        AutoModel::preflight_load_model(path, model_info, this->ctx_length,
+            this->preemption, selected);
+        const auto next_prefill_chunk_len = this->prefill_chunk_len_arg != -1
+            ? this->prefill_chunk_len_arg : model_info["max_prefill_len"].get<int>();
+        engine->set_server_mode(true);
+        engine->configure_parameter("img_pre_resize", this->img_pre_resize);
+        engine->set_prefix_limits(this->prefix_cache_mb, this->prefix_slots, this->prefix_min_gain);
+
+        // Preflight/download errors leave the active model and prompt cache intact.
+        // Once device loading starts, a failure must instead leave an unloaded state.
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        // The old model is released before the new one is built, so from here
-        // on nothing is loaded until the load below succeeds. Record that now:
-        // a failure must not leave the old tag naming an engine that is gone,
-        // or the next request for it would skip the reload and use that engine.
-        // The device is owned by main() and shared with every engine, so it is
-        // deliberately left alone; releasing the engine is what frees the
-        // hardware context.
         this->auto_chat_engine.reset();
         this->current_model_tag = "model-faker";
         this->current_backend.clear();
-        // The cached conversation lived in the engine just released.
         this->prompt_cache.reset();
-        try {
-            auto [ensure_tag, engine] = get_auto_model(model_tag, this->supported_models, this->npu_device_inst);
-            switch (downloader.is_model_downloaded(ensure_tag, false, /*fast_check=*/true)) {
-                case ModelDownloader::ModelStatus::Ready:
-                    break;
-                case ModelDownloader::ModelStatus::Outdated:
-                case ModelDownloader::ModelStatus::Missing:
-                    if (!downloader.pull_model(ensure_tag, this->modelscope)) {
-                        throw std::runtime_error("failed to download " + ensure_tag);
-                    }
-                    break;
-                case ModelDownloader::ModelStatus::Incompatible:
-                    throw std::runtime_error(ensure_tag + " is incompatible with this version of FastFlowLM");
-            }
-            auto [new_ensure_tag, model_info] = supported_models.get_model_info(ensure_tag);
-            engine->set_server_mode(true);
-            engine->configure_parameter("img_pre_resize", this->img_pre_resize);
-            engine->set_prefix_limits(this->prefix_cache_mb, this->prefix_slots, this->prefix_min_gain);
-            const auto load_started = std::chrono::steady_clock::now();
-            engine->load_model(supported_models.get_model_path(new_ensure_tag), model_info, ctx_length, preemption, requested_backend);
-            report_load_time(load_started);
-
-            // Per model, not per process: the flash models take 1024-token
-            // chunks and the rest 4096, so keeping the first model's value
-            // feeds every later model chunks sized for another one.
-            this->prefill_chunk_len = this->prefill_chunk_len_arg != -1
-                ? this->prefill_chunk_len_arg
-                : model_info["max_prefill_len"].get<int>();
-            this->auto_chat_engine = std::move(engine);
-            this->current_model_tag = ensure_tag;
-            this->current_backend = requested_backend;
-        }
-        catch (const std::exception& e) {
-            header_print("ERROR", "Failed to load model: " + std::string(e.what()));
-            return false;
-        }
+        const auto load_started = std::chrono::steady_clock::now();
+        engine->load_model(path, model_info, ctx_length, preemption, selected);
+        report_load_time(load_started);
+        this->prefill_chunk_len = next_prefill_chunk_len;
+        this->auto_chat_engine = std::move(engine);
+        this->current_model_tag = resolved_tag;
+        this->current_backend = selected;
+        return true;
     }
-    return auto_chat_engine != nullptr;
+    catch (const std::exception& e) {
+        if (error) *error = e.what();
+        header_print("ERROR", "Failed to load model: " + std::string(e.what()));
+        return false;
+    }
 }
 
 ///@brief Ensure the asr model is loaded
@@ -973,8 +951,9 @@ void RestHandler::handle_generate(const json& request,
         int length_limit = request.value("max_tokens", 4096);
         auto load_start_time = time_utils::now();
         // TODO: Use Another Check Function avoid loading again
-        if (!ensure_model_loaded(model, request_backend)) {
-            json error_response = {{"error", "Failed to load " + model + " model!"}};
+        std::string load_error;
+        if (!ensure_model_loaded(model, request_backend, &load_error)) {
+            json error_response = {{"error", "Failed to load " + model + " model: " + load_error}};
             send_response(error_response);
             return;
         }
@@ -1092,8 +1071,9 @@ void RestHandler::handle_chat(const json& request,
         int length_limit = options.value("num_predict", 4096);
 
         auto load_start_time = time_utils::now();
-        if (!ensure_model_loaded(model, request_backend)) {
-            json error_response = {{"error", "Failed to load " + model + " model!"}};
+        std::string load_error;
+        if (!ensure_model_loaded(model, request_backend, &load_error)) {
+            json error_response = {{"error", "Failed to load " + model + " model: " + load_error}};
             send_response(error_response);
             return;
         }
@@ -1468,8 +1448,9 @@ void RestHandler::handle_openai_chat_completion(const json& request,
         }
 
         auto load_start_time = time_utils::now();
-        if (!ensure_model_loaded(model, request_backend)) {
-            json error_response = {{"error", "Failed to load " + model + " model!"}};
+        std::string load_error;
+        if (!ensure_model_loaded(model, request_backend, &load_error)) {
+            json error_response = {{"error", "Failed to load " + model + " model: " + load_error}};
             send_response(error_response);
             return;
         }
@@ -1926,8 +1907,9 @@ void RestHandler::handle_openai_completion(const json& request,
 
         int length_limit = value_or(request, "max_tokens", 4096);
 
-        if (!ensure_model_loaded(model, request_backend)) {
-            json error_response = {{"error", "Failed to load " + model + " model!"}};
+        std::string load_error;
+        if (!ensure_model_loaded(model, request_backend, &load_error)) {
+            json error_response = {{"error", "Failed to load " + model + " model: " + load_error}};
             send_response(error_response);
             return;
         }

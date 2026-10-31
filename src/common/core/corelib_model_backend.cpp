@@ -38,7 +38,8 @@ bool NamesAGguf(const std::filesystem::path& path) {
 
 /// \brief the catalog's one GGUF or, when it names none, the directory's one
 std::filesystem::path RequireGguf(const nlohmann::ordered_json& model_info,
-                                  const std::filesystem::path& root, const std::string& name) {
+                                  const std::filesystem::path& root, const std::string& name,
+                                  flm::backend::PackageValidationStage stage = flm::backend::PackageValidationStage::Installed) {
     std::vector<std::string> named;
     if (const auto files = model_info.find("files");
         files != model_info.end() && files->is_array()) {
@@ -48,7 +49,7 @@ std::filesystem::path RequireGguf(const nlohmann::ordered_json& model_info,
     }
     if (named.size() == 1) {
         const auto path = root / named.front();
-        if (!std::filesystem::exists(path))
+        if (stage == flm::backend::PackageValidationStage::Installed && !std::filesystem::is_regular_file(path))
             throw std::runtime_error(name + " core: the catalog entry names " + named.front() +
                                      " but " + path.string() + " does not exist");
         return path;
@@ -62,6 +63,19 @@ std::filesystem::path RequireGguf(const nlohmann::ordered_json& model_info,
     for (const auto& entry : std::filesystem::directory_iterator(root, failed))
         if (entry.is_regular_file(failed) && NamesAGguf(entry.path())) found.push_back(entry.path());
     if (found.size() == 1) return found.front();
+    if (found.empty() && stage == flm::backend::PackageValidationStage::Manifest) {
+        bool other_weights = false;
+        if (const auto files = model_info.find("files"); files != model_info.end() && files->is_array()) {
+            for (const auto& file : *files) {
+                if (file.is_string()) {
+                    const auto filename = file.get<std::string>();
+                    other_weights |= filename == "genai_config.json" ||
+                                     std::filesystem::path(filename).extension() == ".q4nx";
+                }
+            }
+        }
+        if (!other_weights) return {};  // legacy/incomplete manifest: check after download
+    }
     throw std::runtime_error(name + " core: the catalog entry names no GGUF and " + root.string() +
                              " holds " + std::to_string(found.size()) +
                              " of them; it must hold exactly one");
@@ -195,6 +209,11 @@ private:
 };
 
 }  // namespace
+
+void ValidatePackage(const nlohmann::json& info, const std::string& path,
+                     flm::backend::PackageValidationStage stage) {
+    (void)RequireGguf(info, path, "Model", stage);
+}
 
 flm::backend::BackendFactory Factory(BackendSpec spec) {
     return [spec = std::move(spec)](const flm::backend::BackendContext& context)

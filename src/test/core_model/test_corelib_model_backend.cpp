@@ -85,6 +85,24 @@ int WeightLoads() {
     return fake_corelib::GetState().call_counts["ryzenai_corelib_model_weights_create_path"];
 }
 
+void TestPackagePreflightUsesTheGgufRules() {
+    using flm::backend::PackageValidationStage;
+    Package package({"m.gguf"});
+    flm::core::ValidatePackage({{"backend", "flm"}}, package.root.string(), PackageValidationStage::Installed);
+    flm::core::ValidatePackage({{"files", {"next.gguf"}}}, package.root.string(), PackageValidationStage::Manifest);
+    RequireContains(RequireThrows([&] {
+        flm::core::ValidatePackage({{"files", {"next.gguf"}}}, package.root.string(), PackageValidationStage::Installed);
+    }), "next.gguf");
+    RequireContains(RequireThrows([&] {
+        flm::core::ValidatePackage({{"files", {"a.gguf", "b.gguf"}}}, package.root.string(), PackageValidationStage::Manifest);
+    }), "exactly one");
+    Package empty({});
+    flm::core::ValidatePackage(nlohmann::json::object(), empty.root.string(), PackageValidationStage::Manifest);
+    RequireContains(RequireThrows([&] {
+        flm::core::ValidatePackage({{"files", {"genai_config.json"}}}, empty.root.string(), PackageValidationStage::Manifest);
+    }), "GGUF");
+}
+
 void TestPreemptionIsRefusedBeforeTheWeightsAreOpened() {
     Runtime r;
     Package p({"m.gguf"});
@@ -241,6 +259,7 @@ void TestPoisonedFollowsTheEngine() {
 }  // namespace
 
 int main() {
+    RunTest(TestPackagePreflightUsesTheGgufRules, "package preflight uses the GGUF rules");
 #define RUN(name) RunTest(&name, #name)
     RUN(TestPreemptionIsRefusedBeforeTheWeightsAreOpened);
     RUN(TestAContextOutsideTheRuleIsRefusedBeforeTheWeightsAreOpened);

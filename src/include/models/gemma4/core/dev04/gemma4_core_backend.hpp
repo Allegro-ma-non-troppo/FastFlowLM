@@ -6,6 +6,7 @@
 #include "AutoModel/model_backend.hpp"
 
 #include <cstdint>
+#include <stdexcept>
 
 namespace flm::gemma4 {
 
@@ -33,6 +34,11 @@ inline flm::backend::BackendTraits core_traits() {
     traits.needs_npu_xclbin = false;
     traits.supports_preemption = false;
     traits.max_context_length = kCoreContextLimit;
+    traits.validate_load = [](const flm::backend::BackendContext& context) {
+        if (!ContextFits(context.context_length))
+            throw std::out_of_range("Gemma 4 core context length must be in "
+                                    "1..4096, or a multiple of 4096 up to 16384");
+    };
     return traits;
 }
 

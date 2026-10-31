@@ -9,6 +9,7 @@
 ///        resolution rules below are about which provider a build links,
 ///        not about which silicon it runs on.
 #include "AutoModel/model_backend.hpp"
+#include "models/gemma4/core/dev04/gemma4_core_backend.hpp"
 #include "../phi4_core/test_support.hpp"
 #include "nlohmann/json.hpp"
 
@@ -24,7 +25,6 @@ using flm::backend::choose_backend_id;
 using flm::backend::kFlmBackendId;
 using flm::backend::kCoreBackendId;
 using flm::backend::ModelBackend;
-using flm::backend::require_backend_matches_files;
 using flm::backend::resolve_backend_id;
 
 /// \brief the builtin set, emptied
@@ -281,27 +281,6 @@ void test_resolution_rejects_with_a_readable_message() {
     RequireContains(no_family, "(none)");
 }
 
-void test_backend_match_is_enforced_only_for_a_named_flow() {
-    // An entry that names no backend never tied itself to a flow, so the
-    // requested one stands. The phi4 frontend tests depend on this.
-    require_backend_matches_files(false, kFlmBackendId, kCoreBackendId, "--backend");
-
-    // When the entry names the backend that was chosen, there is nothing to refuse.
-    require_backend_matches_files(true, kCoreBackendId, kCoreBackendId, "--backend");
-    require_backend_matches_files(true, kFlmBackendId, kFlmBackendId, "model catalog");
-}
-
-void test_mismatched_backend_is_refused_for_every_source() {
-    for (const char* source : {"--backend", "FLM_BACKEND", "model catalog"}) {
-        const std::string message = RequireThrows([&] {
-            require_backend_matches_files(true, kFlmBackendId, kCoreBackendId, source);
-        });
-        RequireContains(message, kCoreBackendId);
-        RequireContains(message, kFlmBackendId);
-        RequireContains(message, std::string("(from ") + source + ")");
-    }
-}
-
 /// \brief a catalog entry as AutoModel receives it
 /// \note An empty flow leaves kBackendKey out: the entry was never tied to a flow.
 nlohmann::json MakeEntry(const std::string& family, const std::string& flow) {
@@ -311,30 +290,52 @@ nlohmann::json MakeEntry(const std::string& family, const std::string& flow) {
     return entry;
 }
 
-void test_choose_backend_id_refuses_a_mismatch_under_the_given_label() {
+void test_explicit_backend_overrides_the_catalog_default() {
+    ScopedBackendEnv env(nullptr);
     auto& registry = BackendRegistry::instance();
     registry.replace_backend("phi4", kFlmBackendId, StubFactory("flm"));
     registry.replace_backend("phi4", kCoreBackendId, StubFactory("core"));
-
-    // A per-request "backend" field must be named as such, not blamed on --backend.
-    const std::string message = RequireThrows([&] {
-        choose_backend_id(MakeEntry("phi4", kCoreBackendId), kFlmBackendId,
-                          "the request's \"backend\" field");
-    });
-    RequireContains(message, "(from the request's \"backend\" field)");
-    RequireContains(message, "cannot run this model");
-    TEST_REQUIRE(message.find("--backend") == std::string::npos);
+    TEST_REQUIRE(choose_backend_id(MakeEntry("phi4", "flm"), "core") == "core");
+    TEST_REQUIRE(choose_backend_id(MakeEntry("phi4", "core"), "flm") == "flm");
 }
 
-void test_choose_backend_id_names_the_backend_flag_by_default() {
-    auto& registry = BackendRegistry::instance();
-    registry.replace_backend("phi4", kFlmBackendId, StubFactory("flm"));
-    registry.replace_backend("phi4", kCoreBackendId, StubFactory("core"));
-
-    const std::string message = RequireThrows([&] {
-        choose_backend_id(MakeEntry("phi4", kCoreBackendId), kFlmBackendId);
+void test_unknown_backend_names_the_request_source() {
+    const auto message = RequireThrows([&] {
+        choose_backend_id(MakeEntry("phi4", "flm"), "unknown",
+                          "the request's backend field");
     });
-    RequireContains(message, "(from --backend)");
+    RequireContains(message, "the request's backend field");
+    RequireContains(message, "not available");
+}
+
+void test_preflight_uses_the_selected_backend_without_creating_it() {
+    using flm::backend::PackageValidationStage;
+    auto& registry = BackendRegistry::instance();
+    BackendTraits traits;
+    int checked = 0;
+    traits.validate_package = [&](const nlohmann::json& info, const std::string& path,
+                                  PackageValidationStage stage) {
+        TEST_REQUIRE(info.at("backend") == "flm");
+        TEST_REQUIRE(path == "package");
+        ++checked;
+        if (stage == PackageValidationStage::Installed)
+            throw std::runtime_error("missing model.gguf");
+    };
+    registry.replace_backend("preflight", "core", [](const BackendContext&)
+        -> std::unique_ptr<ModelBackend> {
+        throw std::runtime_error("preflight must not construct the backend");
+    }, traits);
+    const auto entry = MakeEntry("preflight", "flm");
+    flm::backend::validate_backend_package(entry, "package", "core", PackageValidationStage::Manifest);
+    const auto message = RequireThrows([&] {
+        flm::backend::validate_backend_package(entry, "package", "core", PackageValidationStage::Installed);
+    });
+    RequireContains(message, "core");
+    RequireContains(message, "package");
+    RequireContains(message, "missing model.gguf");
+    TEST_REQUIRE(checked == 2);
+    registry.replace_backend("preflight", "core", StubFactory("core"));
+    flm::backend::validate_backend_package(entry, "package", "core", PackageValidationStage::Installed);
 }
 
 void test_choose_backend_id_returns_the_matching_backend() {
@@ -372,9 +373,24 @@ void test_choose_backend_id_requires_a_family() {
     RequireContains(missing_family, "Model entry has no details.family");
 }
 
+void test_gemma_context_preflight_checks_page_boundaries() {
+    const auto traits = flm::gemma4::core_traits();
+    TEST_REQUIRE(static_cast<bool>(traits.validate_load));
+    BackendContext context;
+    for (auto length : {4096u, 8192u, 16384u}) {
+        context.context_length = length;
+        traits.validate_load(context);
+    }
+    context.context_length = 5000;
+    RequireContains(RequireThrows([&] { traits.validate_load(context); }), "multiple of 4096");
+}
+
 }  // namespace
 
 int main() {
+    RunTest(test_gemma_context_preflight_checks_page_boundaries, "Gemma context page boundaries");
+    RunTest(test_explicit_backend_overrides_the_catalog_default,
+            "explicit backend overrides the catalog default");
     RunTest(test_register_and_create, "register and create");
     RunTest(test_traits_are_kept_per_backend, "traits are kept per backend");
     RunTest(test_backend_defaults, "backend policy defaults");
@@ -387,14 +403,8 @@ int main() {
             "adding core leaves the flm families alone");
     RunTest(test_resolution_rejects_with_a_readable_message,
             "resolution rejects with a readable message");
-    RunTest(test_backend_match_is_enforced_only_for_a_named_flow,
-            "backend match is enforced only for a named flow");
-    RunTest(test_mismatched_backend_is_refused_for_every_source,
-            "mismatched backend is refused for every source");
-    RunTest(test_choose_backend_id_refuses_a_mismatch_under_the_given_label,
-            "choose refuses a mismatch under the given label");
-    RunTest(test_choose_backend_id_names_the_backend_flag_by_default,
-            "choose names the backend flag by default");
+    RunTest(test_unknown_backend_names_the_request_source, "unknown backend names the request source");
+    RunTest(test_preflight_uses_the_selected_backend_without_creating_it, "preflight uses the selected backend without creating it");
     RunTest(test_choose_backend_id_returns_the_matching_backend,
             "choose returns the matching backend");
     RunTest(test_choose_backend_id_lets_an_unnamed_flow_take_an_override,

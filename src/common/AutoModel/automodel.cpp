@@ -6,10 +6,12 @@
 /// \note This is a source file for the auto_model class
 
 #include "AutoModel/automodel.hpp"
+#include "AutoModel/backend_package.hpp"
 #include "chat/chat_continue.hpp"
 #include "utils/npu_platform.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 
@@ -248,35 +250,22 @@ void AutoModel::_shared_initialize_model_state(
     this->total_tokens = 0;
 }
 
-void AutoModel::_shared_load_backend(std::string model_path, json model_info,
-                                     int default_context_length,
-                                     bool enable_preemption,
-                                     const std::string& requested_backend,
-                                     const nlohmann::json* tokenizer_config) {
-    if (!model_info.contains("details") ||
-        !model_info["details"].contains("family")) {
-        throw std::runtime_error("Model entry has no details.family");
+int AutoModel::preflight_load_model(const std::string& model_path, const json& model_info,
+                                    int default_context_length, bool enable_preemption,
+                                    const std::string& id) {
+    flm::backend::validate_backend_package(
+        model_info, model_path, id, flm::backend::PackageValidationStage::Installed);
+    // Every AutoModel frontend consumes these, including a core package whose
+    // standalone engine factory only needs GGUF. Do not let a missing tokenizer
+    // reach the legacy loader's fatal missing-file path after caller teardown.
+    for (const char* file : {"config.json", "tokenizer.json", "tokenizer_config.json"}) {
+        flm::backend::require_package_file(model_info, model_path, file,
+            flm::backend::PackageValidationStage::Installed);
+        if (!std::ifstream(std::filesystem::path(model_path) / file, std::ios::binary))
+            throw std::runtime_error("Cannot open " + (std::filesystem::path(model_path) / file).string());
     }
-    const std::string family = model_info["details"]["family"].get<std::string>();
-
-    auto& registry = flm::backend::BackendRegistry::instance();
-    // The entry carries the kernel flow its artifacts were built for -- the
-    // weights differ between flows, so this belongs to the model rather than
-    // to the build. model_list wrote it there from the tag the entry was
-    // found under; --backend and FLM_BACKEND take precedence over it but must
-    // agree with it, or the load is refused.
-    const std::string id =
-        flm::backend::choose_backend_id(model_info, requested_backend);
-
-    // Same model on the same backend is a no-op; a different backend is a real
-    // reload even when the path has not changed.
-    if (this->is_model_loaded && this->model_path == model_path &&
-        this->backend_ && this->backend_->id() == id) {
-        header_print("FLM", "Model already loaded: " << this->model_path);
-        return;
-    }
-
-    const auto traits = registry.traits(family, id);
+    const auto traits = flm::backend::BackendRegistry::instance().traits(
+        model_info.at("details").at("family").get<std::string>(), id);
     if (enable_preemption && !traits.supports_preemption) {
         throw std::invalid_argument(
             "Backend '" + id + "' does not support preemption");
@@ -290,6 +279,45 @@ void AutoModel::_shared_load_backend(std::string model_path, json model_info,
             "Backend '" + id + "' context length must be in 1.." +
             std::to_string(traits.max_context_length));
     }
+
+    if (traits.validate_load) {
+        flm::backend::BackendContext context;
+        context.model_path = model_path;
+        context.model_info = model_info;
+        context.context_length = static_cast<std::uint32_t>(context_length);
+        context.enable_preemption = enable_preemption;
+        traits.validate_load(context);
+    }
+    return context_length;
+}
+
+void AutoModel::_shared_load_backend(std::string model_path, json model_info,
+                                     int default_context_length,
+                                     bool enable_preemption,
+                                     const std::string& requested_backend,
+                                     const nlohmann::json* tokenizer_config) {
+    if (!model_info.contains("details") ||
+        !model_info["details"].contains("family")) {
+        throw std::runtime_error("Model entry has no details.family");
+    }
+    const std::string family = model_info["details"]["family"].get<std::string>();
+
+    auto& registry = flm::backend::BackendRegistry::instance();
+    // The catalog supplies the default; explicit and environment selections override it.
+    const std::string id =
+        flm::backend::choose_backend_id(model_info, requested_backend);
+
+    // Same model on the same backend is a no-op; a different backend is a real
+    // reload even when the path has not changed.
+    if (this->is_model_loaded && this->model_path == model_path &&
+        this->backend_ && this->backend_->id() == id) {
+        header_print("FLM", "Model already loaded: " << this->model_path);
+        return;
+    }
+
+    const auto traits = registry.traits(family, id);
+    const int context_length = preflight_load_model(
+        model_path, model_info, default_context_length, enable_preemption, id);
 
     // Tear the old model down before building the new one: the engines hold
     // device memory, and a half-loaded model must never look loaded.

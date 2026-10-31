@@ -123,7 +123,8 @@ public:
 
 private:
     bool ensure_model_loaded(const std::string& model_tag,
-                             const std::string& request_backend = "");
+                             const std::string& request_backend = "",
+                             std::string* error = nullptr);
     void ensure_asr_model_loaded(const std::string& model_tag);
     void ensure_embed_model_loaded(const std::string& model_tag);
     void ensure_decision_model_loaded(const std::string& model_tag);

@@ -1180,9 +1180,51 @@ struct PackageDir {
     }
 };
 
+void TestPackagePreflightDoesNotOpenTheRuntime() {
+    using flm::backend::PackageValidationStage;
+    const auto validate = flm::oga::hipep_traits().validate_package;
+    TEST_REQUIRE(static_cast<bool>(validate));
+    TempDir root;
+    const nlohmann::json npu = {{"files", {"config.json", "model.q4nx"}}};
+    RequireContains(RequireThrows([&] {
+        validate(npu, root.path.string(), PackageValidationStage::Manifest);
+    }), "genai_config.json");
+    // An incomplete/legacy manifest cannot establish incompatibility.
+    validate(nlohmann::json::object(), root.path.string(), PackageValidationStage::Manifest);
+    validate({{"files", {"config.json"}}}, root.path.string(), PackageValidationStage::Manifest);
+    Touch(root.path / "genai_config.json",
+          R"({"model":{"type":"test_type","vocab_size":64,"context_length":128,"decoder":{"filename":"decoder.onnx"}}})");
+    validate(npu, root.path.string(), PackageValidationStage::Manifest);
+    RequireContains(RequireThrows([&] {
+        validate(npu, root.path.string(), PackageValidationStage::Installed);
+    }), "decoder.onnx");
+    Touch(root.path / "decoder.onnx");
+    Touch(root.path / "config.json", R"({"vocab_size":64})");
+    Touch(root.path / "tokenizer_config.json", R"({"eos_token":"<|im_end|>"})");
+    Touch(root.path / "tokenizer.json", R"({"added_tokens":[{"id":5,"content":"<|im_end|>"}]})");
+    // The catalog default and unrelated files do not override local evidence.
+    validate(npu, root.path.string(), PackageValidationStage::Installed);
+    // Qwen3.5's real config nests its vocabulary under text_config.
+    Touch(root.path / "config.json", R"({"text_config":{"vocab_size":64}})");
+    validate(npu, root.path.string(), PackageValidationStage::Installed);
+    Touch(root.path / "tokenizer_config.json", R"({"eos_token":"<|unknown|>"})");
+    RequireContains(RequireThrows([&] {
+        validate(npu, root.path.string(), PackageValidationStage::Installed);
+    }), "tokenizer.json has no id for eos_token <|unknown|>");
+    Touch(root.path / "genai_config.json", "broken json");
+    RequireContains(RequireThrows([&] {
+        validate(npu, root.path.string(), PackageValidationStage::Installed);
+    }), "Cannot parse");
+}
+
 void TestTheBackendRejectsWhatThePackageCannotRun() {
     const auto factory = flm::oga::hipep_factory();
     PackageDir package;
+    const auto preflight = flm::oga::hipep_traits().validate_load;
+    TEST_REQUIRE(static_cast<bool>(preflight));
+    preflight(package.Context());
+    RequireContains(RequireThrows([&] { preflight(package.Context(64, true)); }), "preemption");
+    RequireContains(RequireThrows([&] { preflight(package.Context(129)); }), "1..128");
     RequireContains(RequireThrows<std::invalid_argument>([&] { factory(package.Context(64, true)); }),
                     "does not support preemption");
     RequireContains(RequireThrows<std::out_of_range>([&] { factory(package.Context(0)); }),
@@ -1215,6 +1257,7 @@ void TestTheBackendSaysHowToGetHipep() {
 }  // namespace
 
 int main() {
+    RunTest(TestPackagePreflightDoesNotOpenTheRuntime, "package preflight does not open the runtime");
 #define RUN(name) RunTest(&name, #name)
     RUN(TestPrefillThenForwardAppendsOnlyTheNewToken);
     RUN(TestRestoreIsBookkeepingAndAContinuationReusesTheGenerator);

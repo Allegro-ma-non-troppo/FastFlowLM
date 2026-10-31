@@ -610,6 +610,10 @@ public:
 
 	//************ Unique for each model *************/
 	
+	/// \brief check package and load options before releasing an active frontend
+	/// \return the resolved context length; resolved_backend is already selected
+	static int preflight_load_model(const std::string& model_path, const json& model_info,
+	    int default_context_length, bool enable_preemption, const std::string& resolved_backend);
 	virtual void load_model(std::string model_path, json model_info, int default_context_length = -1, bool enable_preemption = false, const std::string& backend = "") {}
 	virtual std::string generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled = [] { return false; }) = 0;
 	/// \brief Turn structure of the prompt, used by the prompt cache only

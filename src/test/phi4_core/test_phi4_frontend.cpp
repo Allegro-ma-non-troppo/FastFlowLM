@@ -36,6 +36,9 @@ namespace flm::backend {
 void register_builtin_backends(BackendRegistry&) {}
 }  // namespace flm::backend
 
+// The stub engine has no native saved-state API.
+extern "C" const flm_state_api* phi4_npu_state_api(void*) { return nullptr; }
+
 namespace {
 
 constexpr const char* kGguf = "Phi-4-mini-instruct-Q4_G128.gguf";
@@ -383,6 +386,87 @@ std::unique_ptr<Phi4> Load(const TempPackage& package,
     model->load_model(package.path().string(), std::move(info), context,
                       preemption, backend);
     return model;
+}
+
+void TestPackagePreflightKeepsTheLoadedModel() {
+    TempPackage first;
+    TempPackage second;
+    FactoryScope scope;
+    auto model = Load(first, ModelInfo());
+    auto* engine = g_factory.engine;
+    engine->position = 7;
+    auto traits = flm::backend::BackendRegistry::instance().traits("phi4", kFlm);
+    traits.validate_package = [](const nlohmann::json&, const std::string&,
+                                  flm::backend::PackageValidationStage) {
+        throw std::runtime_error("missing target weights");
+    };
+    flm::backend::BackendRegistry::instance().replace_backend("phi4", kFlm, MakeFlmStub, traits);
+    RequireContains(RequireThrows([&] {
+        model->load_model(second.path().string(), ModelInfo(), -1, false, kFlm);
+    }), "missing target weights");
+    TEST_REQUIRE(OnFlm(*model));
+    TEST_REQUIRE(g_factory.engine == engine);
+    TEST_REQUIRE(engine->position == 7);
+    TEST_REQUIRE(g_factory.legacy_calls == 1);
+}
+
+void TestFrontendPreflightChecksMetadataAndOptionsWithoutReleasingTheModel() {
+    TempPackage first;
+    TempPackage second;
+    FactoryScope scope;
+    auto model = Load(first, ModelInfo());
+    auto* engine = g_factory.engine;
+    engine->position = 7;
+    auto traits = flm::backend::BackendRegistry::instance().traits("phi4", kFlm);
+    traits.supports_preemption = false;
+    traits.max_context_length = 4096;
+    flm::backend::BackendRegistry::instance().replace_backend("phi4", kFlm, MakeFlmStub, traits);
+    const auto preflight = [&](int length, bool preemption) {
+        return AutoModel::preflight_load_model(second.path().string(), ModelInfo(), length, preemption, kFlm);
+    };
+    RequireContains(RequireThrows([&] { preflight(4096, true); }), "preemption");
+    RequireContains(RequireThrows([&] { preflight(4097, false); }), "1..4096");
+    TEST_REQUIRE(preflight(4096, false) == 4096);
+    std::filesystem::remove(second.path() / "tokenizer_config.json");
+    RequireContains(RequireThrows([&] { preflight(4096, false); }), "tokenizer_config.json");
+    std::filesystem::remove(second.path() / "tokenizer.json");
+    RequireContains(RequireThrows([&] { preflight(4096, false); }), "tokenizer.json");
+    TEST_REQUIRE(OnFlm(*model));
+    TEST_REQUIRE(g_factory.engine == engine);
+    TEST_REQUIRE(engine->position == 7);
+    TEST_REQUIRE(g_factory.legacy_calls == 1);
+}
+
+void TestEffectiveBackendAndRecoveryAfterFactoryFailure() {
+    TempPackage package;
+    TempPackage second;
+    FactoryScope scope;
+    auto model = Load(package, ModelInfo());
+    auto& registry = flm::backend::BackendRegistry::instance();
+    model->load_model(package.path().string(), ModelInfo(), -1, false, "");
+    TEST_REQUIRE(g_factory.legacy_calls == 1);
+    flm::backend::BackendTraits traits;
+    traits.needs_npu_xclbin = false;
+    registry.replace_backend("phi4", "test-alternate", [](const flm::backend::BackendContext& context) {
+        return std::make_unique<StubBackend>("test-alternate", context.context_length);
+    }, traits);
+    model->load_model(package.path().string(), ModelInfo(), -1, false, "test-alternate");
+    TEST_REQUIRE(model->backend_id() == "test-alternate");
+    model->load_model(package.path().string(), ModelInfo(), -1, false, "");
+    TEST_REQUIRE(OnFlm(*model));
+    TEST_REQUIRE(g_factory.legacy_calls == 2);
+    registry.replace_backend("phi4", kFlm,
+        [](const flm::backend::BackendContext&) -> std::unique_ptr<flm::backend::ModelBackend> {
+            throw std::runtime_error("injected engine allocation failure");
+        });
+    RequireContains(RequireThrows([&] {
+        model->load_model(second.path().string(), ModelInfo(), -1, false, kFlm);
+    }), "injected engine allocation failure");
+    TEST_REQUIRE(model->backend_id().empty());
+    registry.replace_backend("phi4", kFlm, MakeFlmStub);
+    model->load_model(package.path().string(), ModelInfo(), -1, false, kFlm);
+    TEST_REQUIRE(OnFlm(*model));
+    TEST_REQUIRE(g_factory.legacy_calls == 3);
 }
 
 void TestAbsentBackendStillBuildsQ4nxPhi4Npu() {
@@ -945,6 +1029,9 @@ void TestCancellationAndCapacityErrorsLeaveTheServerQueueUsable() {
 } // namespace
 
 int main() {
+    RunTest(TestFrontendPreflightChecksMetadataAndOptionsWithoutReleasingTheModel, "frontend metadata and options preflight");
+    RunTest(TestEffectiveBackendAndRecoveryAfterFactoryFailure, "effective backend and load recovery");
+    RunTest(TestPackagePreflightKeepsTheLoadedModel, "package preflight keeps the loaded model");
 #if defined(FLM_ENABLE_CORE)
     RunTest(TestAbsentBackendStillBuildsQ4nxPhi4Npu, "TestAbsentBackendStillBuildsQ4nxPhi4Npu");
     RunTest(TestEnabledBuildStartsAndRunsLegacyPhi4WhenCorelibDllIsMissing, "TestEnabledBuildStartsAndRunsLegacyPhi4WhenCorelibDllIsMissing");

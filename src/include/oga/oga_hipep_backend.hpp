@@ -14,10 +14,19 @@ namespace flm::oga {
 /// \throws std::runtime_error if OGA places the model on any other device
 OgaApi::Owned<OgaModel> OpenModel(const OgaApi& api, const std::filesystem::path& root);
 
+/// \brief check OGA model files and metadata without loading hip-ep
+void validate_hipep_package(const nlohmann::json& info, const std::string& path,
+                            flm::backend::PackageValidationStage stage);
+
+/// \brief check the requested context against the installed OGA package
+void validate_hipep_load(const flm::backend::BackendContext& context);
+
 inline flm::backend::BackendTraits hipep_traits() {
     flm::backend::BackendTraits traits;
     traits.needs_npu_xclbin = false;
     traits.supports_preemption = false;
+    traits.validate_package = validate_hipep_package;
+    traits.validate_load = validate_hipep_load;
     return traits;
 }
 

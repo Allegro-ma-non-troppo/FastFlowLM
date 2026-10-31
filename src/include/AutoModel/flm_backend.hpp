@@ -15,6 +15,10 @@
 
 namespace flm::backend {
 
+/// \brief check native package entry points without opening weights or the device
+void validate_flm_package(const nlohmann::json& info, const std::string& path,
+                          PackageValidationStage stage);
+
 /// \brief the flm backend for a FastFlowLM NPU engine
 /// \tparam Engine the concrete engine type, e.g. phi4_npu
 /// \note load_weights is called on Engine*, not on causal_lm*. The pure virtual

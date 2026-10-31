@@ -33,4 +33,8 @@ struct BackendSpec {
 ///       before the runtime is acquired or the weights are opened.
 flm::backend::BackendFactory Factory(BackendSpec spec);
 
+/// \brief check the GGUF package before acquiring the runtime
+void ValidatePackage(const nlohmann::json& info, const std::string& path,
+                     flm::backend::PackageValidationStage stage);
+
 }  // namespace flm::core

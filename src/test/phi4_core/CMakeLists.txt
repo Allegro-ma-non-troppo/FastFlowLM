@@ -96,6 +96,7 @@ target_compile_definitions(test_real_corelib PRIVATE RYZENAI_CORELIB_STATIC=1)
 # every target built from these sources also links flm_xgrammar.
 include("${FLM_SOURCE_DIR}/common/chat/chat_sources.cmake")
 set(PHI4_FRONTEND_SOURCES
+    "${FLM_SOURCE_DIR}/common/prefix_slot_cache.cpp"
     "${FLM_SOURCE_DIR}/common/AutoModel/automodel.cpp"
     "${FLM_SOURCE_DIR}/common/AutoModel/model_backend.cpp"
     "${FLM_SOURCE_DIR}/common/AutoModel/modeling_phi4.cpp"

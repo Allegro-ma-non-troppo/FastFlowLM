@@ -12,7 +12,8 @@
 ///       flows at once. Which flow runs a model is a property of the model:
 ///       the weights differ -- NPU2/Q4NX for flm, a Q8_0 GGUF for core -- so a
 ///       model is packaged, tagged and pulled once per flow, and the tag says
-///       which (kCoreFamilySuffix). The catalog's supported_platforms key
+///       which default (kCoreFamilySuffix). An override chooses another registered
+///       backend without changing the package. The catalog's supported_platforms key
 ///       answers the other question, about the silicon.
 /// \note This seam deliberately sits *above* causal_lm. The engine libraries in
 ///       src/lib/<runtime> are prebuilt against causal_lm.hpp, so that header is
@@ -90,6 +91,10 @@ struct BackendContext {
 /// \note These cannot live on ModelBackend: the frontend has to know them to
 ///       assemble the BackendContext in the first place. The defaults describe
 ///       the FastFlowLM NPU engines.
+enum class PackageValidationStage { Manifest, Installed };
+using BackendPackageValidator = std::function<void(
+    const nlohmann::json&, const std::string&, PackageValidationStage)>;
+
 struct BackendTraits {
     /// \brief whether the frontend should build an npu_xclbin_manager for it
     bool needs_npu_xclbin = true;
@@ -97,6 +102,10 @@ struct BackendTraits {
     bool supports_preemption = true;
     /// \brief the largest context length it accepts, or 0 when it has no ceiling
     std::uint32_t max_context_length = 0;
+    /// \brief optional read-only check before downloading or releasing an engine
+    BackendPackageValidator validate_package;
+    /// \brief optional package-dependent load-option check, without a runtime
+    std::function<void(const BackendContext&)> validate_load;
 };
 
 /// \brief one engine plus every rule for driving it
@@ -238,33 +247,17 @@ std::string resolve_backend_id(const std::string& family,
                                std::string* source = nullptr,
                                const std::string& requested_label = "--backend");
 
-/// \brief refuse a backend that the model's files were not built for
-/// \param entry_names_backend whether the entry carries kBackendKey; an entry
-///        that names none was never tied to a flow, so the chosen one stands
-/// \param files_backend the flow the entry's files were built for
-/// \param chosen the id resolve_backend_id returned
-/// \param source the reason it returned, as resolve_backend_id reports it
-/// \throws std::runtime_error when the entry names a backend other than chosen
-/// \note The files differ between flows, so an override cannot make them run.
-///       Without this check the engine fails later on a missing file, such as
-///       genai_config.json, and never says which tag to use instead.
-void require_backend_matches_files(bool entry_names_backend,
-                                   const std::string& files_backend,
-                                   const std::string& chosen,
-                                   const std::string& source);
-
-/// \brief decide which backend to run a catalog entry on, and refuse a conflict
-/// \param model_info the catalog entry, as AutoModel receives it
-/// \param requested the override, such as --backend or a request's "backend"
-///        field; empty when there is none
-/// \param requested_label how `requested` is named in error messages
-/// \return the resolved backend id
-/// \throws std::runtime_error when the entry has no details.family, or when
-///         resolve_backend_id or require_backend_matches_files refuses
-/// \note Call this before releasing a loaded engine. A refusal after the
-///       release would leave the model unloaded.
+/// \brief decide which backend runs an entry using override/env/catalog precedence
+/// \note Selection does not change the package or assert its compatibility.
 std::string choose_backend_id(const nlohmann::json& model_info,
                               const std::string& requested,
                               const std::string& requested_label = "--backend");
+
+/// \brief check the selected backend's package without constructing an engine
+/// \note An absent validator means no additional check, not proven compatibility.
+void validate_backend_package(const nlohmann::json& model_info,
+                              const std::string& model_path,
+                              const std::string& resolved_backend,
+                              PackageValidationStage stage);
 
 }  // namespace flm::backend

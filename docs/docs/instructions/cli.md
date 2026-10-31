@@ -242,9 +242,9 @@ flm serve llama3.2:1b --ctx-len 8192
 | `core` | AMD's ryzenai-corelib | the next NPU generation |
 | `oga-hipep` | onnxruntime-genai with a separately installed hip-ep | the GPU, on a host that also has an NPU (see below) |
 
-You normally never set this. The model tag already names the flow — a family ending in `-core` wants corelib's kernels, one ending in `-oga-hipep` wants the GPU through hip-ep, everything else FastFlowLM's — and `flm list` only ever offers you tags this build and this machine can actually run. `flm run` separately prints the silicon as `NPU platform: dev04`. A model family has at most one engine per backend, so there is nothing to choose between.
+You normally leave this unset. The model tag names the default flow — a family ending in `-core` wants corelib's kernels, one ending in `-oga-hipep` wants the GPU through hip-ep, everything else FastFlowLM's — and `flm list` only ever offers you tags this build and this machine can actually run. `flm run` separately prints the silicon as `NPU platform: dev04`.
 
-The flag is a check, not a switch: it must agree with the tag, because each backend needs its own model files and so has its own tag. Naming a different backend fails before anything loads, and the message names the rule to follow (a family ending in `-core` runs on `core`, a family ending in `-oga-hipep` runs on `oga-hipep`, every other family on `flm`). It also leaves room for the targets that will join this list later:
+`--backend` overrides the catalog's default execution backend. It does not change the model tag, select another download, or convert the weights. The selected backend must be registered for that model family, and the package must contain files that it can load. For example, selecting `oga-hipep` for an NPU-only package reports its missing OGA files; it does not automatically select an `-oga-hipep` tag.
 
 ```shell
 flm run   phi4-mini-it:4b     --backend flm
@@ -259,7 +259,9 @@ flm serve phi4-mini-it-core:4b --backend core
 | 2 | `FLM_BACKEND=<id>` | environment variable, for a whole shell session |
 | 3 | the model's catalog entry | `core` for a tag whose family ends in `-core`, `oga-hipep` for one ending in `-oga-hipep`, `flm` otherwise |
 
-A per-request `"backend"` replaces `--backend` for that request, and reloads the model if it differs from the one already loaded — exactly as asking for a different model does. The same rule applies to it: a backend the model's tag was not built for is refused.
+A per-request `"backend"` replaces `--backend` for that request. A different effective backend requires a reload; explicitly naming the backend already in use does not. Subsequent requests without an override use the server's CLI/environment/catalog defaults again.
+
+Package checks and any required download finish before `/load` or the server releases an active model. A preflight or download failure leaves the current conversation available. Actual runtime or device allocation failures can still occur after the old model has been released.
 
 Asking for a backend this build does not ship fails at load with a message listing what is actually available. There is no silent fallback to another engine or to the CPU. Note that a release is built for one NPU generation: on hardware it was not built for, `run`, `serve` and `bench` refuse up front, and `flm validate` still reports what it found.
 

@@ -352,9 +352,15 @@ Points that are easy to get wrong:
   the entry as `"backend"`, which is what
   [`AutoModel`](../AutoModel/automodel.cpp) later reads. Do not write `backend`
   by hand — it is derived, and a hand-written one is overwritten.
-  `--backend` and `FLM_BACKEND` take precedence over it but must agree with it
-  (`require_backend_matches_files`, because the files differ per backend), and
-  are checked against the registry. The plural `supported_backends` and `details.execution_backend` are
+  `--backend` and `FLM_BACKEND` override this default and are checked against
+  the registry. They do not change the package. A backend may provide a read-only
+  `BackendTraits::validate_package` callback: `Manifest` checks what is known before
+  download, and `Installed` checks local files before releasing the active engine.
+  Missing legacy manifest information is deferred to the installed-file check;
+  `AutoModel::preflight_load_model` also checks shared frontend files and load
+  options; `BackendTraits::validate_load` can enforce package-specific context
+  limits without a runtime. The backend constructor still performs its final
+  checks. The plural `supported_backends` and `details.execution_backend` are
   retired, as are `supported_backend` and `platform_overrides`.
 - **`supported_platforms` is required on every shipped entry**, and
   `src/test/model_list_platform` fails if one is missing or disagrees with its

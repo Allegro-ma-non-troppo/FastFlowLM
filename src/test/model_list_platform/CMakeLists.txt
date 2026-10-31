@@ -18,3 +18,12 @@ target_compile_definitions(test_model_list_platform PRIVATE
 
 enable_testing()
 add_test(NAME test_model_list_platform COMMAND test_model_list_platform)
+
+# The core build targets dev04; the default build targets aie2p.
+add_executable(test_model_list_platform_core
+    test_model_list_platform.cpp
+    "${FLM_SOURCE_DIR}/common/npu_platform.cpp")
+target_include_directories(test_model_list_platform_core PRIVATE "${FLM_SOURCE_DIR}/include")
+target_compile_definitions(test_model_list_platform_core PRIVATE
+    FLM_ENABLE_CORE=1 FLM_TEST_MODEL_LIST_PATH="${FLM_SOURCE_DIR}/model_list.json")
+add_test(NAME test_model_list_platform_core COMMAND test_model_list_platform_core)

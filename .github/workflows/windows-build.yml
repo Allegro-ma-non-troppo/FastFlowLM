@@ -69,7 +69,7 @@ jobs:
       - name: Configure CMake
         shell: powershell
         run: |
-          cmake --preset windows-vs18
+          cmake --preset windows-vs18 -DFLM_ENABLE_OGA_HIPEP=ON
 
       - name: Build
         shell: powershell

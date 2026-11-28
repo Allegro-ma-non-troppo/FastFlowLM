@@ -17,6 +17,9 @@
 #include <iomanip>
 #include <locale>
 #include <array>
+#include <cstdint>
+#include <cstdio>
+#include <random>
 
 namespace {
 /// Populate a non-streaming HTTP error response in the target protocol's wire shape.
@@ -98,10 +101,13 @@ struct ConnectionRejecter : std::enable_shared_from_this<ConnectionRejecter> {
     }
 };
 
-/// Write the Access-Control-* headers http_guard chose (none with --cors 0).
-template <class Response>
-void set_cors_headers(Response& res, const flm::http_guard::HeaderList& headers) {
-    for (const auto& [name, value] : headers) res.set(name, value);
+// A transport identifier, independent of the caller's cancellation key and the model's JSON IDs.
+std::string new_http_request_id() {
+    thread_local std::independent_bits_engine<std::random_device, 64, std::uint64_t> bits;
+    std::ostringstream id;
+    id.imbue(std::locale::classic());
+    id << std::hex << std::setfill('0') << std::setw(16) << bits() << std::setw(16) << bits();
+    return id.str();
 }
 } // namespace
 
@@ -399,10 +405,8 @@ void HttpSession::handle_request(bool cors) {
         options_res->result(http::status::ok);
         options_res->keep_alive(req_.keep_alive());
 
-        set_cors_headers(*options_res, flm::http_guard::cors_headers(server_.origin_policy(),
-            req_[http::field::origin], req_[http::field::access_control_request_headers], true));
-
         options_res->prepare_payload();
+        prepare_response_headers(*options_res, true);
         auto self = shared_from_this();
         http::async_write(socket_, *options_res,
             [self, cors, options_res](beast::error_code ec, std::size_t) {
@@ -468,6 +472,32 @@ void HttpSession::handle_request(bool cors) {
     }
 }
 
+// Called only by a final header writer, after a handler may have replaced the staged response.
+// A record describes the start of this HTTP response, not successful delivery of its body.
+void HttpSession::prepare_response_headers(http::response_header<>& headers, bool preflight) {
+    const auto origin = req_[http::field::origin];
+    for (const auto& [name, value] : flm::http_guard::cors_headers(server_.origin_policy(), origin,
+             req_[http::field::access_control_request_headers], preflight)) {
+        headers.set(name, value);
+    }
+
+    const std::string path = flm::http_guard::route_path(req_.target());
+    if (path != "/v1" && path.compare(0, 4, "/v1/") != 0) return;
+
+    const auto id = new_http_request_id();
+    headers.set("x-request-id", id);
+    if (!preflight && !origin.empty() && headers.count(http::field::access_control_allow_origin)) {
+        // Expose-Headers is a list: add an entry without replacing any already exposed fields.
+        headers.insert(http::field::access_control_expose_headers, "x-request-id");
+    }
+
+    const std::string method = req_.method() == http::verb::unknown ? "UNKNOWN" : std::string(http::to_string(req_.method()));
+    const char* route = server_.routes.count(method + " " + path) ? path.c_str() : "unmatched";
+    // One stdio write, framed on both ends even when another thread is printing a partial line.
+    std::fprintf(stderr, "\nflm.http_response id=%s method=%s route=%s status=%u\n",
+                 id.c_str(), method.c_str(), route, headers.result_int());
+}
+
 ///@brief write response
 void HttpSession::write_response() {
     if (is_streaming_.load()) {
@@ -496,9 +526,7 @@ void HttpSession::write_response() {
     std::cout << "================================================" << std::endl;
 
     // Every non-streaming exit (normal, 4xx/5xx, 404, 413, 503 queue full) passes here.
-    set_cors_headers(res_, flm::http_guard::cors_headers(server_.origin_policy(), req_[http::field::origin]));
-
-
+    prepare_response_headers(res_);
     http::async_write(socket_, res_,
         [self](beast::error_code ec, std::size_t) {
             self->socket_.shutdown(tcp::socket::shutdown_both, ec);
@@ -573,27 +601,16 @@ void HttpSession::write_streaming_response(const json& data, bool is_final) {
             return;
         }
         is_streaming_.store(true);
-        // Initialize streaming response headers
-        res_.result(http::status::ok);
-        res_.set(http::field::content_type, "application/x-ndjson");
-        res_.set(http::field::cache_control, "no-cache");
-        res_.set(http::field::connection, "keep-alive");
-        res_.set(http::field::transfer_encoding, "chunked");
-        
-        // Send headers immediately using raw socket write
-        std::string headers = "HTTP/1.1 200 OK\r\n";
-        headers += "Content-Type: text/event-stream\r\n";
-        headers += "Cache-Control: no-cache\r\n";
-        headers += "Connection: keep-alive\r\n";
-        headers += "Transfer-Encoding: chunked\r\n";
-        for (const auto& [name, value] : flm::http_guard::cors_headers(server_.origin_policy(), req_[http::field::origin])) {
-            headers += name + ": " + value + "\r\n";
-        }
-        headers += "\r\n";
-        
-        // Send headers synchronously
+        // Send only the HTTP/1.1 preamble; send_chunk_data still owns the chunks and terminator.
+        http::response<http::empty_body> head{http::status::ok, 11};
+        head.set(http::field::content_type, "text/event-stream");
+        head.set(http::field::cache_control, "no-cache");
+        head.set(http::field::connection, "keep-alive");
+        head.chunked(true);
+        prepare_response_headers(head);
+        http::response_serializer<http::empty_body> serializer{head};
         boost::system::error_code ec;
-        net::write(socket_, net::buffer(headers), ec);
+        http::write_header(socket_, serializer, ec);
         if (ec) {
             stream_finished_.store(true);
             if (cancellation_token_ && !cancellation_token_->completed()) {

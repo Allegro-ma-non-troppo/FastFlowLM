@@ -298,6 +298,7 @@ def over_connection_cap_reply_follows_cors(api: Api) -> None:
         expect(has_acao == (mode == "any"), f"mode {mode}: 503 reply ACAO present={has_acao}")
         expect(b"retry-after: 1" in reply.lower(), f"503 reply missing Retry-After: 1: {reply[:300]!r}")
         head, _, raw_body = reply.partition(b"\r\n\r\n")
+        expect(b"\r\nx-request-id:" not in head.lower(), "socket cap was hit before a /v1 target was parsed")
         body_json = json.loads(raw_body.decode("utf-8"))
         err = body_json.get("error") if isinstance(body_json, dict) else None
         expect(isinstance(err, dict) and err.get("code") == 503

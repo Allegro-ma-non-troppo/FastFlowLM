@@ -301,6 +301,7 @@ private:
     void read_request(bool cors);
     void handle_request(bool cors);
     void write_response();
+    void prepare_response_headers(http::response_header<>& headers, bool preflight = false);
     void send_chunk_data(const json& data, bool is_final);
     void start_client_disconnect_monitor(std::shared_ptr<CancellationToken> token);
     /// Give this connection's slot back to the server's connection limit, exactly once.

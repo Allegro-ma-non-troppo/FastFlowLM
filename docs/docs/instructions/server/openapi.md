@@ -65,7 +65,7 @@ The following endpoints are actively supported and maintained:
 
 When reporting a failed request, copy the `x-request-id` response header. In the [OpenAI Python SDK](https://github.com/openai/openai-python#request-ids), use `completion._request_id` on a successful chat completion, `exc.request_id` on an `openai.APIStatusError`, or `stream.response.headers.get("x-request-id")` before iterating a stream. Browser JavaScript can read the header from an origin already allowed by the server.
 
-Search the server log for `flm.http_response id=<the returned ID>`. The matching line gives the HTTP method, registered route (or `unmatched`), and status, even with content logging off. It marks the start of the response, **not** successful delivery or stream completion.
+Search the server's standard output for `flm.http_response id=<the returned ID>`. The matching line gives the HTTP method, registered route (or `unmatched`), and status, even with content logging off. It marks the start of the response, **not** successful delivery or stream completion.
 
 Each HTTP attempt under `/v1`, including a retry, error or preflight, gets a fresh server ID. It is not an incoming client ID, a JSON completion ID or the `request_id` used to cancel generation. No ID is available if the server never sends headers or refuses the connection before it reads the target. `/api` responses are unchanged.
 

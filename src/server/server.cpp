@@ -14,10 +14,10 @@
 #include <sstream>
 #include <thread>
 #include <iostream>
-#include <iomanip>
-#include <locale>
 #include <array>
-#include <cstdint>
+#include <atomic>
+#include <chrono>
+#include <cinttypes>
 #include <cstdio>
 #include <random>
 
@@ -102,12 +102,23 @@ struct ConnectionRejecter : std::enable_shared_from_this<ConnectionRejecter> {
 };
 
 // A transport identifier, independent of the caller's cancellation key and the model's JSON IDs.
-std::string new_http_request_id() {
-    thread_local std::independent_bits_engine<std::random_device, 64, std::uint64_t> bits;
-    std::ostringstream id;
-    id.imbue(std::locale::classic());
-    id << std::hex << std::setfill('0') << std::setw(16) << bits() << std::setw(16) << bits();
-    return id.str();
+std::array<char, 33> new_http_request_id() {
+    // Distinct seeds for worker threads, even if the OS entropy source is unavailable.
+    // This identifier is for diagnostics, never authorization.
+    static std::atomic<std::uint64_t> seeds{[] {
+        auto seed = static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count());
+        try {
+            std::random_device rd;
+            seed ^= static_cast<std::uint64_t>(rd()) << 32;
+            seed ^= rd();
+        } catch (const std::exception&) { /* Keep serving with the clock seed. */ }
+        return seed;
+    }()};
+    thread_local std::mt19937_64 bits{seeds.fetch_add(1, std::memory_order_relaxed)};
+    const std::uint64_t hi = bits(), lo = bits();
+    std::array<char, 33> id{};
+    std::snprintf(id.data(), id.size(), "%016" PRIx64 "%016" PRIx64, hi, lo);
+    return id;
 }
 } // namespace
 
@@ -485,7 +496,7 @@ void HttpSession::prepare_response_headers(http::response_header<>& headers, boo
     if (path != "/v1" && path.compare(0, 4, "/v1/") != 0) return;
 
     const auto id = new_http_request_id();
-    headers.set("x-request-id", id);
+    headers.set("x-request-id", id.data());
     if (!preflight && !origin.empty() && headers.count(http::field::access_control_allow_origin)) {
         // Expose-Headers is a list: add an entry without replacing any already exposed fields.
         headers.insert(http::field::access_control_expose_headers, "x-request-id");
@@ -494,8 +505,9 @@ void HttpSession::prepare_response_headers(http::response_header<>& headers, boo
     const std::string method = req_.method() == http::verb::unknown ? "UNKNOWN" : std::string(http::to_string(req_.method()));
     const char* route = server_.routes.count(method + " " + path) ? path.c_str() : "unmatched";
     // One stdio write, framed on both ends even when another thread is printing a partial line.
-    std::fprintf(stderr, "\nflm.http_response id=%s method=%s route=%s status=%u\n",
-                 id.c_str(), method.c_str(), route, headers.result_int());
+    std::fprintf(stdout, "\nflm.http_response id=%s method=%s route=%s status=%u\n",
+                 id.data(), method.c_str(), route, headers.result_int());
+    std::fflush(stdout);  // Make the record visible in a redirected server log before the reply.
 }
 
 ///@brief write response

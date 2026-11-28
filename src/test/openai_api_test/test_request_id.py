@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the diagnostic ID on the HTTP response, independently of JSON IDs and SSE frames.
 
-Run against an isolated server with FLM_TEST_SERVER_LOG set to its combined output. Set
+Run against an isolated server with FLM_TEST_SERVER_LOG set to the file capturing its stdout. Set
 FLM_TEST_LOG_CONTENT to the server's FLM_LOG_CONTENT value (0 or 1) for the concurrent log
 case. The wire checks still run without log access; FLM_TEST_NO_ENGINE skips only real chat.
 """
@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 import flm_api
 from flm_api import Api, Skip, case, expect
-from test_http_safety import LOCAL_ORIGIN, cors_mode
+from test_http_safety import FOREIGN_ORIGIN, LOCAL_ORIGIN, cors_mode
 from test_log_privacy import declared, log_since, log_size
 
 CHAT = '/v1/chat/completions'
@@ -58,10 +58,14 @@ def normalized_scope_and_errors(api: Api) -> None:
     for method, path, route, code, body, headers in [
         ('GET', '/v1/models/?q=1', '/v1/models', 200, None, {}), ('GET', '/v1', 'unmatched', 404, None, {}),
         ('GET', '/v1/systemone/missing', 'unmatched', 404, None, {}), ('POST', CHAT, CHAT, 400, b'{', {}),
+        # Valid JSON reaches the embeddings handler; its callback stages a new error response.
+        ('POST', '/v1/embeddings', '/v1/embeddings', 400, b'{}', {}),
         ('POST', CHAT, CHAT, 413, None, {'Content-Length': str(300 * 1024 * 1024)}),
     ]:
-        status, hdr, _ = request(api, method, path, body, headers)
+        status, hdr, payload = request(api, method, path, body, headers)
         expect(status == code, f'{method} {path}: expected {code}, got {status}')
+        if path == '/v1/embeddings':
+            expect(json.loads(payload)['error']['param'] == 'model', 'expected the embeddings validation error')
         seen.append((response_id(hdr), method, route, code))
     expect(len({r[0] for r in seen}) == len(seen), 'HTTP attempts reused an ID')
     for path in ('/api/version', '/v10/models', '/v1-other'):
@@ -105,7 +109,7 @@ def cors_and_preflight_reuse(api: Api) -> None:
         second.read()
     seen = [(first_id, 'OPTIONS', 'unmatched', first.status), (second_id, 'GET', '/v1/models', 200)]
     if mode == 'local':
-        status, hdr, _ = request(api, 'GET', '/v1/models', headers={'Origin': 'https://foreign.invalid'})
+        status, hdr, _ = request(api, 'GET', '/v1/models', headers={'Origin': FOREIGN_ORIGIN})
         expect(status == 403 and 'x-request-id' not in exposed(hdr), 'denied origin gained permission')
         seen.append((response_id(hdr), 'GET', '/v1/models', 403))
     if log:
@@ -120,19 +124,26 @@ def exposed(headers):
 def retry_and_stream(api: Api) -> None:
     if os.getenv('FLM_TEST_NO_ENGINE') == '1':
         raise Skip('needs a model for real chat and SSE')
+    mode = cors_mode(api)
     body = api.body([{'role': 'user', 'content': 'Say hello.'}], max_tokens=8, request_id='cancel-marker')
     log = os.getenv('FLM_TEST_SERVER_LOG')
     offset = log_size(log) if log else 0
-    ids = []
+    seen = []
     for stream in (False, False, True):
         with closing(connect(api)) as conn:
-            conn.request('POST', CHAT, json.dumps(dict(body, stream=stream)).encode(), INBOUND)
+            headers = {**INBOUND, 'Origin': LOCAL_ORIGIN} if stream else INBOUND
+            conn.request('POST', CHAT, json.dumps(dict(body, stream=stream)).encode(), headers)
             reply = conn.getresponse()
             expect(reply.status == 200, f'chat status {reply.status}')
             rid = response_id(reply.headers)  # before reading any body or SSE event
-            ids.append(rid)
+            seen.append((rid, 'POST', CHAT, reply.status))
             if stream:
                 expect(reply.getheader('Content-Type', '').startswith('text/event-stream'), 'expected SSE')
+                if mode == 'off':
+                    expect(not any(k.lower().startswith('access-control-') for k in reply.headers), 'CORS off on SSE')
+                else:
+                    expect(reply.getheader('Access-Control-Allow-Origin') in (LOCAL_ORIGIN, '*')
+                           and 'x-request-id' in exposed(reply.headers), 'browser cannot read the SSE response ID')
                 frames = [line[5:].strip() for line in reply if line.startswith(b'data:')]
                 expect(len(frames) > 1 and frames[-1] == b'[DONE]', 'stream did not finish normally')
                 objects = [json.loads(frame) for frame in frames[:-1]]
@@ -140,9 +151,15 @@ def retry_and_stream(api: Api) -> None:
                 objects = [json.load(reply)]
             expect(all(obj['id'] != rid and obj.get('choices') is not None for obj in objects),
                    'HTTP ID confused with a completion/chunk ID')
-    expect(len(set(ids)) == len(ids), 'repeated identical chat bodies and stream shared an ID')
+    if mode == 'local':
+        status, hdr, _ = request(api, 'POST', CHAT, json.dumps(dict(body, stream=True)).encode(),
+                                 {'Origin': FOREIGN_ORIGIN})
+        expect(status == 403 and not hdr.get('Access-Control-Allow-Origin') and 'x-request-id' not in exposed(hdr),
+               'denied stream request must have no CORS permission or ID exposure')
+        seen.append((response_id(hdr), 'POST', CHAT, status))
+    expect(len({r[0] for r in seen}) == len(seen), 'repeated chat/stream attempts shared an ID')
     if log:
-        check_records(log, offset, [(rid, 'POST', CHAT, 200) for rid in ids])
+        check_records(log, offset, seen)
 
 
 @case

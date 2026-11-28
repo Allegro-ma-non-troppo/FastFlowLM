@@ -105,12 +105,13 @@ def cors_mode(api: Api) -> str:
     """'off', 'local' or 'any', from how the server answers a preflight and a foreign origin.
 
     With FLM_TEST_CORS set, a server in another mode is a failure, not a skip."""
-    status, headers, _ = call(api, "OPTIONS", "/v1/chat/completions",
-                              headers={"Origin": LOCAL_ORIGIN, "Access-Control-Request-Method": "POST"})
+    # Keep mode probes outside /v1 so they never add records to a request-ID test's log window.
+    status, headers, _ = call(api, "OPTIONS", "/api/version",
+                              headers={"Origin": LOCAL_ORIGIN, "Access-Control-Request-Method": "GET"})
     if status != 200 or not cors_of(headers):
         mode = "off"
     else:
-        status, headers, _ = call(api, "GET", "/v1/models", headers={"Origin": FOREIGN_ORIGIN})
+        status, headers, _ = call(api, "GET", "/api/version", headers={"Origin": FOREIGN_ORIGIN})
         mode = "any" if status == 200 else "local"
     declared = os.environ.get("FLM_TEST_CORS")
     if declared:

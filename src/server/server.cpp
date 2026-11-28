@@ -14,6 +14,8 @@
 #include <sstream>
 #include <thread>
 #include <iostream>
+#include <iomanip>
+#include <locale>
 #include <array>
 #include <atomic>
 #include <chrono>
